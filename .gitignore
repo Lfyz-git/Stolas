@@ -1,0 +1,10 @@
+.env
+config/local.json
+data/
+__pycache__/
+*.py[cod]
+.venv/
+.coverage
+*.log
+dist/
+.docker-client/

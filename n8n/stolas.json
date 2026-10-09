@@ -1,0 +1,167 @@
+{
+  "name": "Stolas - 3h monitoring",
+  "nodes": [
+    {
+      "id": "every-3-hours",
+      "name": "Every 3 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "manual-test",
+      "name": "Manual test",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        180
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "settings",
+      "name": "Settings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return [{json: {endpoint: 'https://stolas.example.invalid', chatId: 'REPLACE_WITH_CHAT_ID'}}];"
+      }
+    },
+    {
+      "id": "run-stolas",
+      "name": "Run Stolas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.endpoint + '/v1/tests' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 610000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "classify-result",
+      "name": "Classify result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const r = $json;\n// HTTP/proxy errors are monitoring faults, never a WAN diagnosis.\nif (r.error) return [{json: {text: 'Stolas: API unavailable or request rejected. Check execution details; WAN state is unknown.'}}];\nif (r.wan_alert === true) {\n  const p = r.primary, c = r.confirmation;\n  return [{json: {text: `Stolas ${r.node}: low speed confirmed on two servers (${r.time}).\\n${p.server}: DL ${p.download.mbps}, UL ${p.upload.mbps} Mbps\\n${c.server}: DL ${c.download.mbps}, UL ${c.upload.mbps} Mbps\\nCycle: ${r.id}`}}];\n}\nif (['route_blocked', 'unavailable'].includes(r.status)) {\n  return [{json: {text: `Stolas ${r.node}: measurement unavailable (${r.status}); WAN state is unknown. Cycle: ${r.id}`}}];\n}\nreturn []; // Normal, disagreement and unconfirmed low samples remain in Stolas history.\n"
+      }
+    },
+    {
+      "id": "telegram-alert",
+      "name": "Telegram alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "chatId": "={{ $('Settings').first().json.chatId }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 3 hours": {
+      "main": [
+        [
+          {
+            "node": "Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual test": {
+      "main": [
+        [
+          {
+            "node": "Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Settings": {
+      "main": [
+        [
+          {
+            "node": "Run Stolas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Stolas": {
+      "main": [
+        [
+          {
+            "node": "Classify result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify result": {
+      "main": [
+        [
+          {
+            "node": "Telegram alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Etc/UTC"
+  },
+  "pinData": {}
+}

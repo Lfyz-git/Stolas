@@ -1,0 +1,32 @@
+services:
+  stolas:
+    build: .
+    image: stolas:0.1.0
+    restart: unless-stopped
+    # Linux only: route checks must see the host's routes, not a bridge gateway.
+    network_mode: host
+    environment:
+      STOLAS_API_TOKEN: ${STOLAS_API_TOKEN:?Set a random API token in .env}
+      STOLAS_LISTEN: ${STOLAS_LISTEN:-127.0.0.1}
+      STOLAS_PORT: ${STOLAS_PORT:-8080}
+      STOLAS_CONFIG: /app/config/local.json
+      STOLAS_DATA_DIR: /data
+    volumes:
+      - ./config/local.json:/app/config/local.json:ro
+      - stolas-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    stop_grace_period: 35s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+volumes:
+  stolas-data:

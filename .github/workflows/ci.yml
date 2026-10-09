@@ -1,0 +1,24 @@
+name: Test and build
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s tests -v
+      - run: node tests/workflow.test.cjs
+      - run: python3 -m agent validate --config config/example.json
+      - run: docker build --tag stolas:ci .
+      - name: Tests with real iperf3 inside the production image
+        run: docker run --rm --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges -v "$PWD/tests:/tests:ro" --entrypoint python3 stolas:ci -m unittest discover -s /tests -v
+      - name: Validate Compose
+        env:
+          STOLAS_API_TOKEN: ci-placeholder-never-used-as-a-deployed-secret
+        run: docker compose config --quiet
