@@ -185,7 +185,7 @@ class DeployAuditTests(unittest.TestCase):
         (self.target / "config/local.json").write_text("custom")
         (self.source / "agent/config.py").write_text("new")
         self.run_deploy("reconfigure")
-        self.assertEqual((self.target / "agent/config.py").read_text(), "old")
+        self.assertEqual((self.target / "agent/config.py").read_text(), "new")
         self.run_deploy("update")
         self.assertEqual((self.target / "agent/config.py").read_text(), "new")
         self.assertEqual((self.target / ".env").read_text(), "secret")
@@ -193,6 +193,9 @@ class DeployAuditTests(unittest.TestCase):
 
     def test_failed_update_restores_old_sources(self):
         self.run_deploy()
+        (self.target / ".env").write_text("existing")
+        (self.target / "config").mkdir()
+        (self.target / "config/local.json").write_text("{}")
         (self.source / "agent/config.py").write_text("broken")
         with patch.object(deploy, "run_installer", side_effect=[1, 0]):
             self.assertEqual(deploy.deploy(self.source, self.target, action="update"), 1)
@@ -256,12 +259,14 @@ class TopologyAuditTests(unittest.TestCase):
         for topology in ("native", "docker", "lan", "vpn", "proxy"):
             api = {"STOLAS_PORT": "8080", "STOLAS_LISTEN": "127.0.0.1"}
             answers = [topology]
-            if topology == "docker": answers += ["-", "172.20.0.1", ""]
-            elif topology == "vpn": answers += ["10.8.0.1", ""]
+            if topology == "docker": pass
+            elif topology == "vpn": answers += ["1"]
             elif topology in ("lan", "proxy"): answers += ["https://stolas.example.test"]
-            else: answers += [""]
-            with patch("builtins.input", side_effect=answers):
-                options = install.collect_topology(api)
+            facts = {"docker": {"available": True}, "stolas": [], "addresses": [{"address": "10.8.0.1", "interface": "wg0"}, {"address": "172.20.0.1", "interface": "br-test"}],
+                     "n8n": [{"name": "automation", "id": "container-id", "image": "n8nio/n8n:2", "mode": "default", "confidence": "image", "networks": {"default": {"Gateway": "172.20.0.1", "NetworkID": "net"}}}],
+                     "networks": {"net": {"driver": "bridge", "ipam": [{"Gateway": "172.20.0.1"}]}}}
+            with patch("builtins.input", side_effect=answers), patch.object(install.environment, "port_state", return_value="free"):
+                options = install.collect_topology(api, facts)
             self.assertEqual(options["topology"], topology)
             self.assertNotEqual(api["STOLAS_LISTEN"], "0.0.0.0")
 

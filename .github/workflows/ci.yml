@@ -34,6 +34,10 @@ jobs:
           docker run --rm --network none -e N8N_ENCRYPTION_KEY=ci-only-not-deployed-key -e N8N_DIAGNOSTICS_ENABLED=false -v /tmp/stolas-workflows:/fixtures:ro docker.n8n.io/n8nio/n8n:2.42.6@sha256:526daa38b68e923cc00c5280d18b4da5d489f115a73bdbf3b8e452b184197a9a import:workflow --separate --input=/fixtures
       - run: python3 -m agent validate --config config/example.json
       - run: docker build --tag stolas:ci .
+      - name: Discover real Docker networks and verify access from n8n
+        env:
+          STOLAS_DOCKER_INTEGRATION: '1'
+        run: python3 -m unittest discover -s tests -p test_environment.py -v
       - name: Tests with real iperf3 inside the production image
         run: docker run --rm --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges -v "$PWD/tests:/tests:ro" --entrypoint python3 stolas:ci -m unittest discover -s /tests -v
       - name: Validate Compose

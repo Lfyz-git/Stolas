@@ -33,7 +33,7 @@ if os.environ.get("STOLAS_TEST_DOWNLOAD_FAIL"):
 destination = sys.argv[sys.argv.index("--output") + 1]
 if sys.argv[-1].endswith("/SHA256SUMS"):
     digest = os.environ.get("STOLAS_TEST_BAD_HASH") or hashlib.sha256(pathlib.Path(os.environ["STOLAS_TEST_ARCHIVE"]).read_bytes()).hexdigest()
-    pathlib.Path(destination).write_text(digest + "  stolas-v0.2.0.tar.gz\\n")
+    pathlib.Path(destination).write_text(digest + "  stolas-v0.3.0.tar.gz\\n")
 else:
     shutil.copyfile(os.environ["STOLAS_TEST_ARCHIVE"], destination)
 ''')
@@ -50,6 +50,9 @@ else:
             "install.sh": b'#!/bin/sh\ncd "$(dirname "$0")"\nexec python3 tools/deploy.py "$@"\n',
             "tools/deploy.py": (ROOT / "tools/deploy.py").read_bytes(),
             "tools/install.py": b'''import pathlib, sys, os
+if '--diagnose' in sys.argv:
+    print('read-only diagnostics')
+    sys.exit(0)
 print('Wizard answer: ', end='', flush=True)
 answer = input()
 pathlib.Path('wizard-answer').write_text(answer)
@@ -129,12 +132,12 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
         self.assert_no_staging()
 
     def test_directory_prompt_ref_and_wizard_arguments(self):
-        code, output = self.pipeline(["--ref", "v0.2.0", "--configure-only"], str(self.target) + "\nanswer\n")
+        code, output = self.pipeline(["--ref", "v0.3.0", "--configure-only"], str(self.target) + "\nanswer\n")
         self.assertEqual(code, 0, output)
         self.assertEqual((self.target / "wizard-answer").read_text(), "answer")
         self.assertIn("--configure-only", (self.target / "wizard-args").read_text())
         call = json.loads((self.root / "curl.json").read_text())
-        self.assertEqual(call[-1], "https://github.com/Lfyz-git/Stolas/releases/download/v0.2.0/stolas-v0.2.0.tar.gz")
+        self.assertEqual(call[-1], "https://github.com/Lfyz-git/Stolas/releases/download/v0.3.0/stolas-v0.3.0.tar.gz")
 
     def test_existing_installation_is_not_overwritten(self):
         self.target.mkdir()
@@ -216,6 +219,14 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
         self.assertEqual(result.returncode, 1)
         self.assertIn("интерактивный терминал", result.stderr)
         self.assertFalse(self.target.exists())
+
+    def test_diagnostics_without_tty_do_not_create_target_or_parent(self):
+        target = self.root / "absent-parent" / "stolas"
+        result = subprocess.run(["sh", str(BOOTSTRAP), "--dir", str(target), "--diagnose"], cwd=self.root, env=self.env,
+                                capture_output=True, text=True, start_new_session=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("read-only diagnostics", result.stdout)
+        self.assertFalse(target.parent.exists())
 
     def test_truncated_bootstrap_body_never_starts_installation(self):
         script = BOOTSTRAP.read_text(encoding="utf-8")

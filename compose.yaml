@@ -2,7 +2,7 @@ name: ${STOLAS_PROJECT_NAME:-stolas}
 services:
   stolas:
     build: .
-    image: stolas:0.1.0
+    image: ${STOLAS_PROJECT_NAME:-stolas}:0.3.0
     restart: unless-stopped
     # Linux only: route checks must see the host's routes, not a bridge gateway.
     network_mode: host

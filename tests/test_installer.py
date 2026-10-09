@@ -48,7 +48,9 @@ class InstallerTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args, cli_code, json.dumps({"status": cli_status, "primary": None, "confirmation": None}), "")
             return subprocess.CompletedProcess(args, 0, "", "")
 
-        with patch.object(installer, "collect_config", return_value=self.cfg), patch.object(installer, "collect_api", return_value=self.api), patch.object(installer, "collect_n8n", return_value=options or {"mode": "later"}), patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "check_connection"), patch.object(installer, "run", side_effect=command):
+        options = {"topology": "native", "notification_mode": "alerts_only", **(options or {"mode": "later"})}
+        facts = {"hostname": "test", "installation": {"directory": str(self.root), "config": False}, "docker": {"available": True, "version": "test"}, "n8n": [], "warnings": []}
+        with patch.object(installer, "collect_plan", return_value={"config": self.cfg, "api": self.api, "n8n": options, "completed": []}), patch.object(installer.environment, "discover", return_value=facts), patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "check_connection"), patch.object(installer, "run", side_effect=command):
             return installer.install(self.root, configure_only=configure_only)
 
     def test_later_starts_service_and_runs_exactly_one_cli_cycle(self):
@@ -123,6 +125,7 @@ class InstallerTests(unittest.TestCase):
         (self.root / "tools").mkdir()
         shutil.copy2(ROOT / "tools/install.py", self.root / "tools/install.py")
         shutil.copy2(ROOT / "tools/deploy.py", self.root / "tools/deploy.py")
+        shutil.copy2(ROOT / "tools/environment.py", self.root / "tools/environment.py")
         shutil.copy2(ROOT / "install.sh", self.root / "install.sh")
         shutil.copy2(ROOT / "compose.yaml", self.root / "compose.yaml")
         bindir = self.root / "bin"
@@ -139,7 +142,7 @@ elif "exec" in sys.argv:
     print(json.dumps({"status": "ok", "primary": None, "confirmation": None}))
 ''')
         stub.chmod(0o755)
-        answers = [""] * 13 + ["", "", "", "", "", "192.0.2.1/32", "", ""] + [""] * 21 + ["", "", "", "later"]
+        answers = ["", "192.0.2.1/32", "later", "apply"]
         env = installer.clean_env()
         env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
         result = subprocess.run(["sh", "install.sh"], cwd=self.root, env=env, input="\n".join(answers) + "\n", capture_output=True, text=True, timeout=30)
@@ -147,7 +150,8 @@ elif "exec" in sys.argv:
         calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
         self.assertEqual(sum("exec" in call for call in calls), 1)
         self.assertTrue(any("--wait" in call for call in calls))
-        self.assertEqual(installer.validated(self.root / "config/local.json"), self.cfg)
+        actual = installer.validated(self.root / "config/local.json")
+        self.assertEqual({k: v for k, v in actual.items() if k != "node"}, {k: v for k, v in self.cfg.items() if k != "node"})
         self.assertEqual((self.root / ".env").stat().st_mode & 0o777, 0o600)
         self.assertNotIn("STOLAS_API_TOKEN=", result.stdout)
 
@@ -160,7 +164,7 @@ elif "exec" in sys.argv:
     def test_update_keeps_files_and_does_not_run_extra_load_test(self):
         self.install(configure_only=True)
         before = {name: (self.root / name).read_bytes() for name in (".env", "config/local.json")}
-        with patch.object(installer, "collect_config") as wizard, patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), patch.object(installer, "first_test") as heavy, patch.object(installer, "request_json", return_value={"status": "ready"}) as health:
+        with patch.object(installer, "collect_config") as wizard, patch("builtins.input", return_value="apply"), patch.object(installer.environment, "port_state", return_value="free"), patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), patch.object(installer, "first_test") as heavy, patch.object(installer, "request_json", return_value={"status": "ready"}) as health:
             self.assertEqual(installer.install(self.root, reuse=True), 0)
         heavy.assert_not_called()
         wizard.assert_not_called()
@@ -237,8 +241,7 @@ elif "exec" in sys.argv:
         for path in (self.root / "n8n").glob("*.json*"):
             for secret in (options["key"], options["bot_token"], self.api["STOLAS_API_TOKEN"]):
                 self.assertNotIn(secret, path.read_text())
-        with self.assertRaisesRegex(RuntimeError, "дубликатов"):
-            installer.connect_n8n(self.root, options, self.api, installer.workflow(self.root, options))
+        installer.connect_n8n(self.root, options, self.api, installer.workflow(self.root, options))
         self.assertEqual(len(requests), 3)
 
 

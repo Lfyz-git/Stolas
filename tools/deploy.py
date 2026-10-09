@@ -67,7 +67,7 @@ def installed(target):
 
 
 def recoverable(target):
-    metadata = {".stolas-install.lock", ".stolas-install-status.json", ".stolas-transaction.json", ".stolas-managed.json", ".stolas-backups"}
+    metadata = {".stolas-install.lock", ".stolas-install-status.json", ".stolas-transaction.json", ".stolas-managed.json", ".stolas-backups", ".stolas-draft.json", ".stolas-progress.json"}
     if all(path.name in metadata or (path.is_dir() and not path.is_symlink() and
            all(item.is_dir() and not item.is_symlink() for item in path.rglob("*"))) for path in target.iterdir()):
         return True
@@ -175,12 +175,14 @@ def stage_sources(source, target, ref, digest):
     return backup
 
 
-def run_installer(target, configure_only=False, reuse=False):
+def run_installer(target, configure_only=False, reuse=False, recover=False):
     args = [sys.executable, str(target / "tools/install.py")]
     if configure_only:
         args.append("--configure-only")
     if reuse:
         args.append("--reuse-config")
+    if recover and "--recover" in (target / "tools/install.py").read_text(encoding="utf-8"):
+        args.append("--recover")
     return subprocess.run(args, cwd=target).returncode
 
 
@@ -202,6 +204,7 @@ def deploy(source, target, ref="checkout", digest="", action=None, configure_onl
                 print("Прерванное обновление восстановлено. Повторите запуск.")
                 return 1
         already = installed(target)
+        configured = (target / ".env").is_file() and (target / "config/local.json").is_file()
         if already and source != target and action is None:
             print("Stolas уже установлен. reconfigure — повторная настройка; update — безопасное обновление; rollback — откат; cancel — выход.")
             action = input("Действие [reconfigure]: ").strip() or "reconfigure"
@@ -219,23 +222,27 @@ def deploy(source, target, ref="checkout", digest="", action=None, configure_onl
                 if not backups:
                     raise RuntimeError("Нет резервной копии для отката")
                 restore(target, backups[-1].parent)
-            elif source != target and (not already or action == "update"):
+            elif source != target and (not already or action in ("update", "reconfigure")):
                 backup = stage_sources(source, target, ref, digest)
-            code = run_installer(target, configure_only, reuse=already and action in ("update", "rollback"))
-            if code == 1 and backup and already:
+            code = run_installer(target, configure_only, reuse=configured and action in ("update", "rollback"))
+            if code == 3:
+                if backup:
+                    restore(target, backup)
+                atomic_json(diagnostic, {"stage": "cancelled", "exit_code": code})
+            elif code == 1 and backup and already and configured:
                 restore(target, backup)
-                recovery = run_installer(target, configure_only, reuse=True)
+                recovery = run_installer(target, configure_only, reuse=True, recover=True)
                 atomic_json(diagnostic, {"stage": "rolled_back", "exit_code": code, "recovery_exit_code": recovery})
             else:
-                atomic_json(diagnostic, {"stage": "complete" if code == 0 else "needs_attention", "exit_code": code, "ref": ref})
+                atomic_json(diagnostic, {"stage": "complete" if code == 0 else "interrupted" if code == 130 else "needs_attention", "exit_code": code, "ref": ref})
             if journal.exists():
                 state = json.loads(journal.read_text())
-                atomic_json(journal, {**state, "phase": "complete" if code != 1 else "failed"})
+                atomic_json(journal, {**state, "phase": "cancelled" if code == 3 else "interrupted" if code == 130 else "complete" if code != 1 else "failed"})
             return code
         except BaseException as error:
-            if backup and already:
+            if backup and already and configured:
                 restore(target, backup)
-                recovery = run_installer(target, configure_only, reuse=True)
+                recovery = run_installer(target, configure_only, reuse=True, recover=True)
                 atomic_json(journal, {"phase": "rolled_back", "backup": backup.relative_to(target).as_posix()})
                 atomic_json(diagnostic, {"stage": "rolled_back", "error_type": type(error).__name__, "recovery_exit_code": recovery})
             else:
@@ -250,8 +257,12 @@ def main():
     parser.add_argument("--source-sha256", default="")
     parser.add_argument("--action", choices=("reconfigure", "update", "rollback", "cancel"))
     parser.add_argument("--configure-only", action="store_true")
+    parser.add_argument("--diagnose", action="store_true")
     args = parser.parse_args()
     try:
+        if args.diagnose:
+            target = safe_path(args.target)
+            return subprocess.run([sys.executable, str(ROOT / "tools/install.py"), "--diagnose", "--root", str(target)]).returncode
         return deploy(ROOT, args.target, args.source_ref, args.source_sha256, args.action, args.configure_only)
     except (ValueError, RuntimeError, OSError, KeyboardInterrupt, EOFError) as error:
         print("Stolas:", str(error) if not isinstance(error, (KeyboardInterrupt, EOFError)) else "Ввод прерван", file=sys.stderr)

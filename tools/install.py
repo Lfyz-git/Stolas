@@ -24,31 +24,54 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from agent.config import DEFAULT, GROUPS, load  # noqa: E402
+from tools import environment  # noqa: E402
+
+
+class Back(Exception):
+    pass
+
+
+class Cancel(Exception):
+    pass
+
+
+class Rescan(Exception):
+    pass
 
 
 def ask(label, default="", convert=str, secret=False):
     while True:
         suffix = " [Enter: сохранить/сгенерировать]" if secret else f" [{default}]" if default != "" else ""
         raw = (getpass.getpass if secret else input)(label + suffix + ": ")
+        if raw.strip().lower() == ":back":
+            raise Back()
+        if raw.strip().lower() == ":cancel":
+            raise Cancel()
+        if raw.strip().lower() == ":rescan":
+            raise Rescan()
         try:
             return convert(raw if raw else default)
-        except (ValueError, TypeError, ZoneInfoNotFoundError):
-            print("Некорректное значение, повторите ввод.")
+        except (ValueError, TypeError, ZoneInfoNotFoundError) as error:
+            explanation = str(error) if not secret else getattr(convert, "description", "проверьте формат секрета; введённое значение скрыто")
+            print(label + ": " + (explanation or "проверьте формат и допустимые значения") + ". Повторите ввод или :back / :cancel.")
 
 
 def choice(label, values, default):
     def parse(value):
         if value.lower() not in values:
-            raise ValueError()
+            raise ValueError("выберите " + ", ".join(values))
         return value.lower()
     return ask(label + " (" + "/".join(values) + ")", default, parse)
 
 
 def integer(low, high=None):
     def parse(value):
-        result = int(value)
+        try:
+            result = int(value)
+        except (TypeError, ValueError):
+            raise ValueError("нужно целое число") from None
         if result < low or (high is not None and result > high):
-            raise ValueError()
+            raise ValueError(f"допустимо от {low}" + (f" до {high}" if high is not None else " и выше"))
         return result
     return parse
 
@@ -56,15 +79,25 @@ def integer(low, high=None):
 def number(value):
     result = float(value)
     if not math.isfinite(result) or not 0 <= result <= 1000000:
-        raise ValueError()
+        raise ValueError("нужно конечное число от 0 до 1000000")
     return result
 
 
 def matching(pattern):
+    descriptions = {
+        r"[A-Za-z0-9_-]{32,256}": "нужно 32–256 символов: латинские буквы, цифры, _ или -",
+        r"[^\s]+": "нужно непустое значение без пробелов",
+        r"\d+:[A-Za-z0-9_-]+": "нужен токен бота в формате число:секрет",
+        r"-?\d+|@[a-zA-Z0-9_]{5,}": "нужен числовой Telegram chat id (для группы возможен минус) или @имя канала",
+        r"[a-zA-Z0-9_-]{1,64}": "идентификатор: 1–64 латинских букв, цифр, _ или -",
+        r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}": "нужно имя хоста или IPv4, без схемы URL и номера порта",
+        r"[\w.-]{1,64}": "имя узла: 1–64 букв, цифр, точек, _ или -",
+    }
     def parse(value):
         if not re.fullmatch(pattern, value):
-            raise ValueError()
+            raise ValueError(descriptions.get(pattern, "значение не соответствует указанному формату"))
         return value
+    parse.description = descriptions.get(pattern, "проверьте формат секрета; введённое значение скрыто")
     return parse
 
 
@@ -72,22 +105,25 @@ def url(value):
     parsed = urllib.parse.urlsplit(value)
     if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username
             or parsed.password or parsed.query or parsed.fragment):
-        raise ValueError()
+        raise ValueError("нужен URL с http/https и именем хоста, без логина, query и fragment")
     if parsed.port is not None and not 1 <= parsed.port <= 65535:
         raise ValueError()
     if any(c.isspace() for c in value):
         raise ValueError()
     if parsed.scheme == "http" and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
-        raise ValueError("Use HTTPS outside loopback")
+        raise ValueError("для удалённого хоста нужен HTTPS; HTTP разрешён только для локального доступа/доверенного VPN")
     return value.rstrip("/")
 
 
 def cidrs(value):
     result = [v.strip() for v in value.split(",") if v.strip()]
     if not result:
-        raise ValueError()
+        raise ValueError("укажите внешний IPv4 основного WAN, например 203.0.113.10/32; список не может быть пустым")
     for item in result:
-        ipaddress.IPv4Network(item)
+        try:
+            ipaddress.IPv4Network(item)
+        except ValueError:
+            raise ValueError("нужен IPv4/CIDR, например 203.0.113.10/32; у диапазона укажите адрес сети без host bits") from None
     return result
 
 
@@ -99,7 +135,12 @@ def ports(value):
 
 
 def timezone(value):
-    ZoneInfo(value)
+    if value == "Etc/UTC":
+        return value
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError:
+        raise ValueError("неизвестный IANA timezone или отсутствует пакет tzdata (Ubuntu: sudo apt-get install tzdata)") from None
     return value
 
 
@@ -223,22 +264,6 @@ def collect_config(existing):
     return cfg
 
 
-def collect_api(root):
-    previous = {}
-    if (root / ".env").exists():
-        for line in (root / ".env").read_text(encoding="utf-8").splitlines():
-            key, sep, value = line.partition("=")
-            if sep:
-                previous[key] = value.strip().strip("'\"")
-    print("\nHTTP API. По умолчанию доступен только на localhost.")
-    listen = ask("Адрес прослушивания (IPv4)", previous.get("STOLAS_LISTEN", "127.0.0.1"), lambda v: str(ipaddress.IPv4Address(v)))
-    port = ask("Порт API", previous.get("STOLAS_PORT", "8080"), integer(1, 65535))
-    token = ask("API-токен: минимум 32 символа A–Z/a–z/0–9/_/-", previous.get("STOLAS_API_TOKEN") or secrets.token_urlsafe(32), matching(r"[A-Za-z0-9_-]{32,256}"), secret=True)
-    if listen != "127.0.0.1":
-        print("API будет слушать сеть. Обеспечьте TLS/VPN и ограничьте доступ firewall.")
-    return {"STOLAS_API_TOKEN": token, "STOLAS_LISTEN": listen, "STOLAS_PORT": str(port)}
-
-
 def read_api(root):
     values = {}
     for line in (root / ".env").read_text(encoding="utf-8").splitlines():
@@ -277,43 +302,311 @@ def connection_url(value, topology):
     return result
 
 
-def collect_topology(api):
-    print("native — n8n в ОС; docker — отдельный Docker-контейнер на этом хосте; lan — другая машина через HTTPS; vpn — доверенный VPN; proxy — HTTPS reverse proxy.")
-    topology = choice("Схема подключения n8n", ("native", "docker", "lan", "vpn", "proxy"), "native")
+def select_named(label, items, names, default=0, automatic=True):
+    if len(items) == 1 and automatic:
+        print(label + ": " + names[0] + " (обнаружено автоматически)")
+        return items[0]
+    for index, name in enumerate(names, 1):
+        print(f"  {index}. {name}")
+    index = ask(label + " — номер варианта", default + 1, integer(1, len(items)))
+    return items[index - 1]
+
+
+def propose_port(api, facts, root):
+    address, initial = api["STOLAS_LISTEN"], int(api["STOLAS_PORT"])
+    for port in range(initial, min(65536, initial + 100)):
+        state = environment.port_state(address, port)
+        if state == "free":
+            if port != initial:
+                print(f"Порт {initial} занят. Предлагается свободный порт {port}.")
+            api["STOLAS_PORT"] = str(port)
+            return
+        if state == "busy" and port == initial and facts["stolas"] and (root / ".env").exists():
+            try:
+                old = read_api(root)
+                if old["STOLAS_PORT"] == str(port) and old["STOLAS_LISTEN"] == address:
+                    reply = request_json(f"http://{address}:{port}", "/healthz", old["STOLAS_API_TOKEN"])
+                    if reply.get("status") == "ready":
+                        print(f"Порт {port} принадлежит существующему Stolas; будет использован повторно.")
+                        return
+            except (ValueError, RuntimeError):
+                pass
+        if state == "not_local":
+            raise ValueError(f"Адрес {address} отсутствует на Linux-хосте. Повторите обнаружение или выберите другую схему подключения")
+        if state == "denied":
+            raise ValueError(f"ОС не разрешает привязку к {address}:{port}; выберите непривилегированный порт в разделе api")
+    raise ValueError(f"Нет свободного порта в диапазоне {initial}–{min(65535, initial + 99)}; измените порт в разделе api")
+
+
+def collect_topology(api, facts=None, root=ROOT, previous=None):
+    facts = facts if facts is not None else environment.discover(root)
+    previous = previous or {}
+    print("docker — обнаруженный n8n на этом хосте; native — n8n в ОС; lan/proxy — удалённый HTTPS; vpn — доверенный VPN.")
+    default = previous.get("topology", "docker" if facts["n8n"] else "native")
+    topology = choice("Где работает n8n", ("docker", "native", "lan", "vpn", "proxy"), default)
     options = {"topology": topology}
-    default = "http://127.0.0.1:" + api["STOLAS_PORT"] if topology == "native" else ""
     if topology == "docker":
-        options["docker_container"] = ask("Имя локального контейнера n8n (для проверки сети; -: проверить вручную)", "-", lambda value: "" if value == "-" else matching(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*")(value))
-        print("Укажите IPv4 Linux-хоста в Docker bridge-сети n8n. Его можно найти в Gateway сети контейнера через docker inspect; localhost контейнера не подходит.")
-    if topology in ("docker", "vpn"):
-        address = ask("IPv4 хоста Stolas в выбранной Docker/VPN сети (без 0.0.0.0)", "", private_address)
-        api["STOLAS_LISTEN"] = address
-        default = f"http://{address}:{api['STOLAS_PORT']}"
-        print("API будет слушать только", address, "— ограничьте firewall адресами n8n/доверенного VPN.")
-    if topology in ("lan", "proxy"):
-        print("Нужен уже настроенный TLS reverse proxy на этом хосте. Stolas остаётся на localhost; чужие сервисы мастер не меняет.")
-        print("Пример Caddy: your.domain { reverse_proxy 127.0.0.1:" + api["STOLAS_PORT"] + " }. DNS должен указывать на этот хост; разрешите доступ только n8n.")
+        if not facts["docker"]["available"]:
+            raise ValueError(facts["docker"]["reason"] + ". Исправьте доступ и повторите обнаружение (rescan), либо выберите другую схему")
+        if not facts["n8n"]:
+            raise ValueError("Запущенный n8n не обнаружен по образу/Compose метаданным. Запустите его и выберите rescan, либо выберите удалённое подключение")
+        saved = next((c for c in facts["n8n"] if c["name"] == previous.get("docker_container")), None)
+        container = saved or select_named("Экземпляр n8n", facts["n8n"],
+            [f"{c['name']} — {c['image']}, проект {c.get('project') or 'без Compose'}" for c in facts["n8n"]],
+            automatic=len(facts["n8n"]) == 1 and facts["n8n"][0]["confidence"] == "image")
+        candidates, reasons = environment.host_candidates(container, facts)
+        if not candidates:
+            raise ValueError("Не найден подтверждённый адрес хоста для n8n: " + "; ".join(reasons or ["контейнер не подключён к подходящей сети"]) + ". Используйте HTTPS proxy/VPN; сети n8n не изменены")
+        saved_network = next((c for c in candidates if c["network"] == previous.get("network") and c["address"] == api["STOLAS_LISTEN"]), None)
+        selected = saved_network or select_named("Сеть для связи n8n со Stolas", candidates,
+                    [f"{c['network']} — интерфейс {c['interface']} ({c['address']})" for c in candidates])
+        options.update(docker_container=container["name"], docker_id=container["id"], network=selected["network"], network_mode=container["mode"])
+        api["STOLAS_LISTEN"] = selected["address"]
+    elif topology == "vpn":
+        candidates = [item for item in facts["addresses"] if not ipaddress.IPv4Address(item["address"]).is_loopback and not ipaddress.IPv4Address(item["address"]).is_global]
+        if not candidates:
+            raise ValueError("IPv4 интерфейсов не обнаружены. Сначала настройте доверенный VPN и установите iproute2; мастер не создаёт туннель")
+        print("Выберите интерфейс заранее настроенного доверенного VPN. Наличие адреса само по себе не доказывает, что сеть доверенная.")
+        selected = select_named("Интерфейс VPN", candidates, [f"{item['interface']} ({item['address']})" for item in candidates], automatic=False)
+        api["STOLAS_LISTEN"] = selected["address"]
+    else:
         api["STOLAS_LISTEN"] = "127.0.0.1"
-    options["endpoint"] = ask("URL Stolas, доступный из n8n", default, lambda value: connection_url(value, topology))
+    propose_port(api, facts, root)
+    if topology in ("lan", "proxy"):
+        print("Нужен ваш уже настроенный HTTPS reverse proxy. Stolas будет доступен proxy на 127.0.0.1:" + api["STOLAS_PORT"] + ".")
+        print("Caddy: your.domain { reverse_proxy 127.0.0.1:" + api["STOLAS_PORT"] + " }. Настройте DNS/сертификат и доступ только от n8n; мастер не меняет proxy/firewall.")
+        options["endpoint"] = ask("Ваш HTTPS адрес Stolas на reverse proxy", previous.get("endpoint", ""), https_url)
+    else:
+        options["endpoint"] = f"http://{api['STOLAS_LISTEN']}:{api['STOLAS_PORT']}"
+        connection_url(options["endpoint"], "native" if options.get("network_mode") == "host" else topology)
+        print("Адрес Stolas для n8n сформирован автоматически:", options["endpoint"])
     return options
 
 
-def collect_n8n(api=None):
-    print("\nn8n: later — отложить, export — файл для ручного импорта, api — подключить существующий n8n.")
-    mode = choice("Настроить n8n", ("later", "export", "api"), "later")
+def collect_n8n(api, facts=None, root=ROOT, previous=None, checkpoint=None):
+    facts = facts if facts is not None else environment.discover(root)
+    previous = previous or {}
+    existing_state = (root / "n8n/install-state.json").exists()
+    modes = ("later", "export", "api", "keep") if previous.get("endpoint") else ("later", "export", "api")
+    print("n8n: later — отложить; export — подготовить импорт без ключей; api — подключить через API существующего n8n." + (" keep — сохранить существующую интеграцию." if "keep" in modes else ""))
+    default = "keep" if existing_state and "keep" in modes else previous.get("mode", "later")
+    resuming = previous.get("_incomplete", False)
+    mode = previous["mode"] if resuming else choice("Интеграция n8n", modes, default if default in modes else "later")
     if mode == "later":
         return {"mode": mode}
-    options = {"mode": mode, **collect_topology(api or {"STOLAS_LISTEN": "127.0.0.1", "STOLAS_PORT": "8080"})}
-    options["chat_id"] = ask("Telegram chat id", "", matching(r"-?\d+|@[a-zA-Z0-9_]{5,}"))
-    options["hours"] = ask("Интервал расписания, часов", 3, integer(1, 23))
-    options["timezone"] = ask("Часовой пояс IANA", "Europe/Moscow", timezone)
-    options["notification_mode"] = choice("Telegram-уведомления", ("alerts_only", "every_measurement", "daily_summary"), "alerts_only")
-    options["summary_hour"] = ask("Час ежедневной сводки", 9, integer(0, 23)) if options["notification_mode"] == "daily_summary" else 9
+    if mode == "keep":
+        options = copy.deepcopy(previous)
+        options["mode"] = "keep"
+        return options
+    options = {"mode": mode, **collect_topology(api, facts, root, previous)}
+    options["chat_id"] = previous["chat_id"] if resuming and previous.get("chat_id") else ask("Telegram chat id", previous.get("chat_id", ""), matching(r"-?\d+|@[a-zA-Z0-9_]{5,}"))
+    options["hours"] = previous.get("hours", 3)
+    options["timezone"] = previous.get("timezone", facts.get("timezone") or "Etc/UTC")
+    options["notification_mode"] = choice("Telegram: только проблемы / каждый замер / сводка за сутки", ("alerts_only", "every_measurement", "daily_summary"), previous.get("notification_mode", "alerts_only"))
+    options["summary_hour"] = ask("Час ежедневной сводки", previous.get("summary_hour", 9), integer(0, 23)) if options["notification_mode"] == "daily_summary" else 9
     if mode == "api":
-        options["url"] = ask("Базовый URL существующего n8n (без /api/v1)", "", url)
-        options["key"] = ask("n8n API key (Settings → n8n API)", "", matching(r"[^\s]+"), secret=True)
-        options["bot_token"] = ask("Telegram bot token", "", matching(r"\d+:[A-Za-z0-9_-]+"), secret=True)
+        for field, label, converter, secret in (("url", "Адрес существующего n8n (без /api/v1)", url, False),
+                ("key", "n8n API key", matching(r"[^\s]+"), True),
+                ("bot_token", "Telegram bot token", matching(r"\d+:[A-Za-z0-9_-]+"), True)):
+            options[field] = previous[field] if resuming and previous.get(field) else ask(label, previous.get(field, ""), converter, secret=secret)
+            if checkpoint:
+                checkpoint({**options, "_incomplete": True})
     return options
+
+
+def save_draft(root, plan):
+    path = root / ".stolas-draft.json"
+    if any(item.is_symlink() for item in (path, *path.parents)):
+        raise ValueError("Черновик не записывается через symlink")
+    fd, name = tempfile.mkstemp(prefix=".stolas-draft-", dir=root)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            json.dump(plan, file, ensure_ascii=False)
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def validate_plan(plan):
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "config.json"
+        path.write_text(json.dumps(plan["config"]), encoding="utf-8")
+        validated(path)
+    api = plan["api"]
+    matching(r"[A-Za-z0-9_-]{32,256}")(api["STOLAS_API_TOKEN"])
+    ipaddress.IPv4Address(api["STOLAS_LISTEN"])
+    integer(1, 65535)(api["STOLAS_PORT"])
+    options = plan["n8n"]
+    if options["mode"] != "later":
+        connection_url(options["endpoint"], "native" if options.get("network_mode") == "host" else options["topology"])
+        matching(r"-?\d+|@[a-zA-Z0-9_]{5,}")(options["chat_id"])
+        integer(1, 23)(options["hours"])
+        timezone(options["timezone"])
+        if options["notification_mode"] not in ("alerts_only", "every_measurement", "daily_summary"):
+            raise ValueError("Неизвестная политика Telegram")
+        if options["mode"] == "api" and not options.get("_incomplete"):
+            url(options["url"])
+            matching(r"[^\s]+")(options["key"])
+            matching(r"\d+:[A-Za-z0-9_-]+")(options["bot_token"])
+
+
+def validate_discovered_endpoint(plan, facts):
+    options = plan["n8n"]
+    if options["mode"] == "later" or options.get("topology") != "docker":
+        return
+    if not facts["docker"]["available"]:
+        raise ValueError(facts["docker"]["reason"] + "; повторите rescan")
+    selected = next((c for c in facts["n8n"] if c["name"] == options.get("docker_container")), None)
+    if selected is None:
+        raise ValueError("Сохранённый контейнер n8n больше не обнаружен; выберите раздел n8n или rescan")
+    choices, reasons = environment.host_candidates(selected, facts)
+    host = urllib.parse.urlsplit(options["endpoint"]).hostname
+    if not any(c["address"] == host for c in choices):
+        raise ValueError("Сохранённый endpoint не соответствует обнаруженным сетям n8n; выберите раздел n8n. " + "; ".join(reasons))
+    if host != plan["api"]["STOLAS_LISTEN"] or urllib.parse.urlsplit(options["endpoint"]).port != int(plan["api"]["STOLAS_PORT"]):
+        raise ValueError("Endpoint n8n отличается от адреса/порта Stolas; обновите интеграцию в разделе n8n")
+    options["docker_id"] = selected["id"]
+    options["network_mode"] = selected["mode"]
+
+
+def print_facts(facts):
+    print("\nОбнаружение окружения (только чтение)")
+    print("Каталог:", facts["installation"]["directory"])
+    print("Docker:", facts["docker"].get("version") or facts["docker"]["reason"])
+    print("n8n:", ", ".join(c["name"] + " (" + c["image"] + ")" for c in facts["n8n"]) or "запущенные экземпляры не найдены")
+    state = facts["installation"]
+    print("Stolas:", "сохранённые настройки" if state["config"] else "новая/незавершённая настройка", "; версия:", state.get("ref", "checkout/неизвестна"), "; этап:", state.get("stage", "нет"))
+    if state.get("wizard_stage"):
+        print("Последний завершённый этап:", state["wizard_stage"])
+    for warning in facts["warnings"]:
+        print("Диагностика:", warning)
+
+
+def print_plan(plan, facts, reuse=False):
+    cfg, api, options = plan["config"], plan["api"], plan["n8n"]
+    print("\nПредлагаемая конфигурация — секреты скрыты")
+    print(f"Узел: {cfg['node']}; измерение: IPv4 TCP, {cfg['parallel']} потоков × {cfg['seconds']} сек. на направление")
+    print("Серверы:", "; ".join(f"{name}: {len(cfg['server_groups'][name]['servers'])} ({cfg['server_groups'][name]['selection']})" for name in GROUPS))
+    print("WAN:", cfg["route"]["mode"], "; разрешённые CIDR:", ",".join(cfg["route"]["expected_public_cidrs"]) or "не заданы")
+    print("API:", api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"], "; Bearer: сохранён/сгенерирован, не отображается")
+    print("n8n:", options["mode"], "; endpoint:", options.get("endpoint", "не настраивается"))
+    if options["mode"] != "later":
+        print("Telegram:", options["notification_mode"], "; интервал:", options["hours"], "ч.; timezone:", options["timezone"])
+    print("После подтверждения:", "пересборка Stolas без изменения настроек/нагрузочного теста" if reuse else "сохранение настроек, запуск Stolas, один CLI-тест; workflow останется неактивным")
+    if not facts["docker"]["available"]:
+        print("Docker потребуется установить/восстановить доступ:", facts["docker"]["reason"])
+    print("До подтверждения сохраняется только приватный черновик 0600; сервисы и действующая конфигурация не меняются.")
+
+
+def collect_plan(root, existing, facts, reuse=False):
+    api = read_api(root) if (root / ".env").exists() else {"STOLAS_API_TOKEN": secrets.token_urlsafe(32), "STOLAS_LISTEN": "127.0.0.1", "STOLAS_PORT": "8080"}
+    options = {"mode": "later"}
+    settings = root / "n8n/settings.json"
+    if settings.is_file():
+        options = json.loads(settings.read_text(encoding="utf-8"))
+        options["mode"] = "keep"
+    plan = {"config": existing, "api": api, "n8n": options, "completed": []}
+    draft = root / ".stolas-draft.json"
+    if draft.exists() and not reuse:
+        if draft.is_symlink():
+            raise ValueError("Черновик является symlink; чтение остановлено")
+        saved = json.loads(draft.read_text(encoding="utf-8"))
+        validate_plan(saved)
+        print("Найден приватный черновик: завершённые шаги —", ", ".join(saved.get("completed", [])) or "нет")
+        if choice("Продолжить черновик или использовать сохранённую конфигурацию", ("resume", "saved"), "resume") == "resume":
+            plan = saved
+    elif not (root / "config/local.json").exists():
+        plan["config"]["node"] = re.sub(r"[^\w.-]", "-", facts["hostname"])[:64] or "stolas-node"
+    print("Enter принимает предложенное. :back — назад; :rescan — повторить обнаружение; :cancel — отменить. Ctrl+C сохранит черновик.")
+    configured = (root / "config/local.json").exists() and (root / ".env").exists() and not draft.exists()
+    stages = [] if reuse or configured else [stage for stage in ("wan", "n8n") if stage not in plan["completed"]]
+    position = 0
+    while True:
+        section = stages[position] if position < len(stages) else None
+        try:
+            if section is None:
+                if plan["n8n"]["mode"] not in ("later", "keep") and plan["n8n"].get("topology") not in ("lan", "proxy"):
+                    plan["n8n"]["endpoint"] = f"http://{plan['api']['STOLAS_LISTEN']}:{plan['api']['STOLAS_PORT']}"
+                print_plan(plan, facts, reuse)
+                values = ("apply", "cancel") if reuse else ("apply", "wan", "measurements", "api", "n8n", "schedule", "rescan", "cancel")
+                section = choice("Применить или исправить раздел", values, "apply")
+                if section == "cancel":
+                    raise Cancel()
+                if section == "apply":
+                    if plan["config"]["route"]["mode"] == "required" and not plan["config"]["route"]["expected_public_cidrs"]:
+                        raise ValueError("Основной WAN не задан. Выберите раздел wan и введите разрешённый IPv4/CIDR; проверка не отключается автоматически")
+                    validate_plan(plan)
+                    before = copy.deepcopy(plan["api"])
+                    propose_port(plan["api"], facts, root)
+                    if reuse and plan["api"] != before:
+                        plan["api"] = before
+                        raise RuntimeError("Порт сохранённой установки занят другим сервисом. Отмените обновление и выберите повторную настройку")
+                    if plan["n8n"]["mode"] not in ("later", "keep") and plan["n8n"].get("topology") not in ("lan", "proxy"):
+                        plan["n8n"]["endpoint"] = f"http://{plan['api']['STOLAS_LISTEN']}:{plan['api']['STOLAS_PORT']}"
+                    if plan["api"] != before:
+                        print("Порт изменился после обнаружения; проверьте сводку ещё раз.")
+                        continue
+                    validate_discovered_endpoint(plan, facts)
+                    save_draft(root, plan)
+                    return plan
+            if section == "rescan":
+                facts.clear()
+                facts.update(environment.discover(root))
+                print_facts(facts)
+                continue
+            candidate = copy.deepcopy(plan)
+            if section == "wan":
+                route = candidate["config"]["route"]
+                print("Укажите разрешённый внешний IPv4/CIDR ОСНОВНОГО WAN. Текущий внешний адрес сам по себе не доказывает, что это не LTE.")
+                route["mode"] = choice("WAN: required — проверять; off — осознанно отключить", ("required", "off"), route["mode"])
+                if route["mode"] == "required":
+                    route["expected_public_cidrs"] = ask("Разрешённый основной WAN: IPv4/32 или CIDR через запятую", ",".join(route["expected_public_cidrs"]), cidrs)
+            elif section == "n8n":
+                def partial(options):
+                    candidate["n8n"] = options
+                    plan["api"] = copy.deepcopy(candidate["api"])
+                    plan["n8n"] = copy.deepcopy(options)
+                    save_draft(root, candidate)
+                candidate["n8n"] = collect_n8n(candidate["api"], facts, root, candidate["n8n"], checkpoint=partial)
+                propose_port(candidate["api"], facts, root)
+            elif section == "measurements":
+                candidate["config"] = collect_config(candidate["config"])
+            elif section == "api":
+                print("Для Docker/n8n адрес определяется обнаружением. Меняйте здесь порт и токен; после смены токена обновите credential n8n.")
+                candidate["api"]["STOLAS_PORT"] = str(ask("Порт Stolas", candidate["api"]["STOLAS_PORT"], integer(1024, 65535)))
+                candidate["api"]["STOLAS_API_TOKEN"] = ask("API-токен (Enter сохраняет)", candidate["api"]["STOLAS_API_TOKEN"], matching(r"[A-Za-z0-9_-]{32,256}"), secret=True)
+                propose_port(candidate["api"], facts, root)
+                if candidate["n8n"]["mode"] not in ("later", "keep") and candidate["n8n"].get("topology") not in ("lan", "proxy"):
+                    candidate["n8n"]["endpoint"] = f"http://{candidate['api']['STOLAS_LISTEN']}:{candidate['api']['STOLAS_PORT']}"
+            elif section == "schedule":
+                if candidate["n8n"]["mode"] == "later":
+                    print("Сначала выберите интеграцию n8n.")
+                    continue
+                candidate["n8n"]["hours"] = ask("Интервал замеров, часов", candidate["n8n"]["hours"], integer(1, 23))
+                candidate["n8n"]["timezone"] = ask("Часовой пояс IANA", candidate["n8n"]["timezone"], timezone)
+            validate_plan(candidate)
+            plan = candidate
+            if section not in plan["completed"]:
+                plan["completed"].append(section)
+            save_draft(root, plan)
+            if position < len(stages):
+                position += 1
+        except Back:
+            if position < len(stages) and position:
+                position -= 1
+        except Rescan:
+            facts.clear()
+            facts.update(environment.discover(root))
+            print_facts(facts)
+        except Cancel:
+            if draft.exists() and not draft.is_symlink():
+                draft.unlink()
+            raise
+        except (ValueError, RuntimeError) as error:
+            print("Шаг не завершён:", str(error))
+            if position < len(stages) and section == "n8n":
+                print("Повторите шаг, :rescan, :back или :cancel; другой раздел доступен из сводки.")
 
 
 def workflow(root, options):
@@ -342,8 +635,6 @@ def docker_command(root):
     command = ["docker"]
     if not shutil.which("docker"):
         print("Docker отсутствует. Будут установлены Docker Engine и Compose из официального apt-репозитория.")
-        if choice("Установить зависимости (Ubuntu/Debian)", ("yes", "no"), "yes") == "no":
-            raise RuntimeError("Установите Docker Engine и Compose v2 и повторите запуск.")
         prefix = [] if os.geteuid() == 0 else ["sudo"]
         run(prefix + ["sh", str(root / "tools/install-docker.sh")], root)
     if run(command + ["info"], root, capture=True, check=False).returncode:
@@ -416,7 +707,7 @@ def request_json(base, path, token, body=None, n8n=False):
 
 
 def check_connection(root, options, api, compose):
-    container = options.get("docker_container")
+    container = options.get("docker_id") or options.get("docker_container")
     if options.get("topology") == "docker" and container:
         code = "let s='';process.stdin.on('data',x=>s+=x);process.stdin.on('end',async()=>{try{const p=JSON.parse(s);const r=await fetch(p.url+'/healthz',{headers:{Authorization:'Bearer '+p.token},redirect:'error',signal:AbortSignal.timeout(8000)});const j=await r.json();process.exit(r.status===200&&j.status==='ready'?0:1)}catch{process.exit(1)}})"
         docker = compose[:compose.index("compose")]
@@ -427,6 +718,8 @@ def check_connection(root, options, api, compose):
         except subprocess.TimeoutExpired:
             raise RuntimeError("Проверка сети n8n превысила 15 секунд; проверьте Docker и доступность endpoint") from None
         if result.returncode:
+            if result.returncode in (126, 127) or "executable file not found" in result.stderr.lower():
+                raise RuntimeError("В контейнере n8n не удалось запустить Node.js. Проверка из его сети НЕ выполнена; проверьте HTTP Request через Manual test. Экспорт сохранён в n8n/local.json")
             raise RuntimeError("n8n Docker не достигает /healthz. Проверьте IP bridge, адрес STOLAS_LISTEN и firewall; контейнер n8n не изменён")
         print("Доступ к API проверен из network namespace контейнера n8n.")
     else:
@@ -451,37 +744,58 @@ def connect_n8n(root, options, api, data):
             raise RuntimeError("n8n API вернул несовместимую схему credentials. Используйте режим export; существующие credentials не изменены")
     # Save created resource IDs after each mutation. Do not automatically retry creates.
     state_path = root / "n8n/install-state.json"
-    if state_path.exists():
-        raise RuntimeError("n8n/install-state.json уже существует. Проверьте ранее созданные ресурсы в n8n; для ручной настройки используйте export. Автоматическое создание дубликатов остановлено.")
-    state = {"url": options["url"], "credentials": []}
+    state = json.loads(state_path.read_text()) if state_path.exists() else {"url": options["url"], "credentials": []}
+    if state["url"] != options["url"]:
+        raise RuntimeError("Состояние относится к другому n8n. Используйте export; существующие ресурсы не изменены")
+    if state.get("pending"):
+        raise RuntimeError("Предыдущий запрос n8n мог создать ресурс, но его ID не получен. Проверьте n8n/install-state.json и ресурсы в n8n; используйте export, автоматический повтор остановлен")
+    if state.get("workflow_id"):
+        print("Существующий workflow сохранён. Для изменения его настроек импортируйте n8n/local.json вручную; дубликат не создаётся.")
+        return
     write_private(state_path, json.dumps(state, indent=2) + "\n")
     credentials = [
         ("httpHeaderAuth", "Stolas API", {"name": "Authorization", "value": "Bearer " + api["STOLAS_API_TOKEN"]}),
         ("telegramApi", "Stolas Telegram", {"accessToken": options["bot_token"], "baseUrl": "https://api.telegram.org"}),
     ]
     for kind, name, values in credentials:
-        created = request_json(base, "/credentials", options["key"], {"name": name, "type": kind, "data": values}, n8n=True)
-        ref = {"id": str(created["id"]), "name": name}
-        state["credentials"].append({"type": kind, **ref})
-        write_private(state_path, json.dumps(state, indent=2) + "\n")
+        ref = next(({k: c[k] for k in ("id", "name")} for c in state["credentials"] if c["type"] == kind), None)
+        if ref is None:
+            state["pending"] = kind
+            write_private(state_path, json.dumps(state, indent=2) + "\n")
+            created = request_json(base, "/credentials", options["key"], {"name": name, "type": kind, "data": values}, n8n=True)
+            ref = {"id": str(created["id"]), "name": name}
+            state["credentials"].append({"type": kind, **ref})
+            state.pop("pending")
+            write_private(state_path, json.dumps(state, indent=2) + "\n")
         for target in (("Run Stolas", "Read summary") if kind == "httpHeaderAuth" else ("Telegram alert",)):
             next(n for n in data["nodes"] if n["name"] == target)["credentials"] = {kind: ref}
     payload = {k: data[k] for k in ("name", "nodes", "connections", "settings")}
+    state["pending"] = "workflow"
+    write_private(state_path, json.dumps(state, indent=2) + "\n")
     created = request_json(base, "/workflows", options["key"], payload, n8n=True)
     state["workflow_id"] = str(created["id"])
+    state.pop("pending")
     write_private(state_path, json.dumps(state, indent=2) + "\n")
     print("Создан НЕАКТИВНЫЙ workflow:", options["url"] + "/workflow/" + urllib.parse.quote(state["workflow_id"], safe=""))
     print("В n8n выполните Manual test и проверьте credentials, доступ к Stolas и Telegram.")
-    print("После проверки включите расписание в n8n. API key и bot token на диске не сохраняются.")
+    print("После проверки включите расписание в n8n. Секреты не входят в export; приватный черновик удаляется после успешного завершения.")
 
 
-def install(root=ROOT, configure_only=False, reuse=False):
+def install(root=ROOT, configure_only=False, reuse=False, recover=False):
     current = root / "config/local.json"
     existing = validated(current) if current.exists() else copy.deepcopy(DEFAULT)
-    cfg = existing if reuse else collect_config(existing)
-    api = read_api(root) if reuse else collect_api(root)
-    options = {"mode": "later"} if reuse else collect_n8n(api)
-    generated = workflow(root, options) if options["mode"] != "later" else None
+    facts = environment.discover(root)
+    print_facts(facts)
+    plan = {"config": existing, "api": read_api(root), "n8n": {"mode": "later"}, "completed": []} if recover else collect_plan(root, existing, facts, reuse)
+    validate_plan(plan)
+    cfg, api, options = plan["config"], plan["api"], plan["n8n"]
+    generated = workflow(root, options) if options["mode"] not in ("later", "keep") else None
+    progress_path = root / ".stolas-progress.json"
+    previous_progress = json.loads(progress_path.read_text()) if progress_path.exists() else {}
+    fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()
+    def checkpoint(stage, **extra):
+        save_draft(root, plan)
+        write_private(progress_path, json.dumps({"stage": stage, "config_sha256": fingerprint, **extra}) + "\n")
     # Validate before touching existing configuration or installing anything.
     with tempfile.TemporaryDirectory() as directory:
         check_path = Path(directory) / "config.json"
@@ -493,32 +807,45 @@ def install(root=ROOT, configure_only=False, reuse=False):
         previous_env = (root / ".env").read_text(encoding="utf-8") if (root / ".env").exists() else ""
         project_lines = [line for line in previous_env.splitlines() if line.startswith("STOLAS_PROJECT_NAME=")]
         write_private(root / ".env", "".join(k + "=" + v + "\n" for k, v in api.items()) + "".join(line + "\n" for line in project_lines))
-    if options["mode"] != "later":
+    if options["mode"] not in ("later", "keep"):
         write_private(root / "n8n/settings.json", json.dumps({k: v for k, v in options.items() if k not in ("key", "bot_token")}, ensure_ascii=False, indent=2) + "\n")
+    if generated:
+        write_private(root / "n8n/local.json", json.dumps(generated, ensure_ascii=False, indent=2) + "\n")
+        print("Workflow без секретов сохранён:", root / "n8n/local.json")
+    checkpoint("configured")
     print("\nНастройки сохранены. Старые версии файлов сохранены рядом как .bak-*.")
     if configure_only:
         if generated:
             write_private(root / "n8n/local.json", json.dumps(generated, ensure_ascii=False, indent=2) + "\n")
         print("Только конфигурация: установка, сеть, n8n API и тест скорости не запускались.")
+        (root / ".stolas-draft.json").unlink()
         return 0
     compose = docker_command(root)
     run(compose + ["config", "--quiet"], root)
     run(compose + ["build", "stolas"], root)
     run(compose + ["run", "--rm", "--no-deps", "stolas", "validate"], root)
     run(compose + ["up", "-d", "--force-recreate", "--wait", "--wait-timeout", "90", "stolas"], root)
+    checkpoint("deployed")
+    if options["mode"] != "later":
+        check_connection(root, options, api, compose)
     if reuse:
         host = api["STOLAS_LISTEN"] if api["STOLAS_LISTEN"] != "0.0.0.0" else "127.0.0.1"
         request_json(f"http://{host}:{api['STOLAS_PORT']}", "/healthz", api["STOLAS_API_TOKEN"])
         result = None
         print("Сервис обновлён; конфигурация, история и n8n сохранены. Дополнительный нагрузочный тест не запускался.")
+    elif previous_progress.get("config_sha256") == fingerprint and previous_progress.get("stage") == "measured":
+        result = {"status": previous_progress["first_status"]}
+        print("Первичный CLI-цикл уже завершён до прерывания; повторный нагрузочный тест не запускается.")
     else:
         result = first_test(compose, root)
+    checkpoint("measured", first_status=result["status"] if result else None)
     if generated:
-        check_connection(root, options, api, compose)
         connect_n8n(root, options, api, generated)
     elif not reuse:
         print("n8n отложен. Выполнен один CLI-цикл; автоматическое расписание не включено.")
     print("API Stolas запущен. История: docker compose exec stolas python3 -m agent history")
+    checkpoint("complete", first_status=result["status"] if result else None)
+    (root / ".stolas-draft.json").unlink()
     if result and result["status"] in ("route_blocked", "unavailable"):
         print("Установка завершена, но измерение не получено. Проверьте ошибки в JSON выше.")
         return 2
@@ -529,16 +856,25 @@ def main():
     parser = argparse.ArgumentParser(description="Интерактивная установка Stolas на Linux")
     parser.add_argument("--configure-only", action="store_true", help="только записать настройки без установки и тестирования")
     parser.add_argument("--reuse-config", action="store_true", help="сохранить настройки и существующий n8n при обновлении")
+    parser.add_argument("--recover", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--diagnose", action="store_true", help="обнаружение без изменений, JSON без секретов")
+    parser.add_argument("--root", type=Path, default=ROOT, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if not sys.platform.startswith("linux"):
         parser.error("Запускайте установщик на целевом Linux-хосте.")
     if sys.version_info < (3, 10):
         parser.error("Для установщика требуется Python 3.10+.")
     try:
-        return install(configure_only=args.configure_only, reuse=args.reuse_config)
+        if args.diagnose:
+            print(json.dumps(environment.discover(args.root), ensure_ascii=False, indent=2))
+            return 0
+        return install(root=args.root, configure_only=args.configure_only, reuse=args.reuse_config, recover=args.recover)
+    except Cancel:
+        print("\nОтменено до применения. Действующая конфигурация и контейнеры не изменены.")
+        return 3
     except (KeyboardInterrupt, EOFError):
-        print("\nУстановка прервана. Сохранённые файлы и запущенный сервис остаются на месте.", file=sys.stderr)
-        return 1
+        print("\nУстановка прервана. Завершённые шаги сохранены в приватном черновике. Повторите команду для продолжения; действующие сервисы не удаляются.", file=sys.stderr)
+        return 130
     except (ValueError, RuntimeError, OSError, KeyError) as error:
         print("\nОшибка установки:", str(error), file=sys.stderr)
         print("Исправьте причину и повторите запуск. Не публикуйте .env и его резервные копии.", file=sys.stderr)

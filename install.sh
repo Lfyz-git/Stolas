@@ -7,6 +7,12 @@ if [ "$(uname -s)" != Linux ]; then
     exit 1
 fi
 if ! command -v python3 >/dev/null 2>&1; then
+    for arg in "$@"; do
+        if [ "$arg" = --diagnose ]; then
+            echo 'Для диагностики нужен Python 3.10+; пакеты не устанавливались.' >&2
+            exit 1
+        fi
+    done
     if ! command -v apt-get >/dev/null 2>&1; then
         echo 'Установите Python 3.10+ и повторите запуск.' >&2
         exit 1

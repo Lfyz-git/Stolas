@@ -1,5 +1,25 @@
 # Validation record
 
+Installer UX revision v0.3.0 (2026-10-09):
+
+- Full local Windows/Python 3.11 suite: 123 scenarios, 104 passed and 19 explicit
+  Linux/real-Docker/iperf3 skips. Shell syntax and example configuration checked.
+- Added read-only Docker discovery tests for image/Compose identity, worker
+  exclusion, multiple instances/networks, missing/remote/inaccessible Docker,
+  missing/nonlocal/conflicting gateways, macvlan, host mode and occupied ports.
+- Wizard tests cover automatically computed endpoints, seven-answer ordinary
+  setup without gateway/URL input, confirmation, cancellation/back, interrupted
+  draft recovery including secrets, repeat setup, stale topology and port races.
+- Partial v0.2.0 checkout is distinguished from configured installation; n8n
+  pending requests are not repeated and known credential IDs are reused.
+- CI additionally creates two uniquely named isolated Docker networks and one
+  disposable n8n-image Node container, validates actual Linux gateway discovery
+  and authenticated HTTP from both namespaces, rejects wrong Bearer, and removes
+  only these test resources. Existing containers/networks are not modified.
+- Measurement agent code is unchanged. No access to Azazel, no public iperf load.
+- Live deployment routing, reverse proxy and Telegram delivery remain checks for
+  the deployment environment.
+
 Pre-deployment audit update (2026-10-09):
 
 - Windows / Python 3.11: full unittest suite passes; Linux-only bootstrap,
