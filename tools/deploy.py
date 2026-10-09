@@ -68,7 +68,8 @@ def installed(target):
 
 def recoverable(target):
     metadata = {".stolas-install.lock", ".stolas-install-status.json", ".stolas-transaction.json", ".stolas-managed.json", ".stolas-backups"}
-    if all(path.name in metadata for path in target.iterdir()):
+    if all(path.name in metadata or (path.is_dir() and not path.is_symlink() and
+           all(item.is_dir() and not item.is_symlink() for item in path.rglob("*"))) for path in target.iterdir()):
         return True
     journal = checked_file(target, ".stolas-transaction.json")
     if journal.is_file():
