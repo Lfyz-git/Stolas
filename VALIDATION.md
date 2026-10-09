@@ -43,3 +43,15 @@ Server group update (2026-10-09):
 - Installer tests cover separate group prompts, random selection, 17 primary
   servers and empty secondary groups. Local suite: 54 passed, two Linux/iperf3
   integration tests skipped on Windows.
+
+Archive bootstrap update (2026-10-09):
+
+- Added bootstrap.sh for downloading GitHub source archives without Git, choosing
+  installation path/ref and handing off to the existing interactive installer.
+- Shell syntax checked locally with Git Bash. Existing 54 tests passed on Windows;
+  eight bootstrap tests and two Linux/iperf3 tests require Linux CI.
+- Offline bootstrap tests use a real pseudo-terminal and a local download stub:
+  curl|sh input, paths with spaces, directory prompts, configure-only arguments,
+  existing-install preservation, failed/corrupt downloads, unsafe archive members,
+  missing TTY and propagation of the wizard's exit status.
+- Anonymous raw/archive downloading requires the GitHub repository to be public.

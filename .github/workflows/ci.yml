@@ -15,7 +15,7 @@ jobs:
       - run: python3 -m unittest discover -s tests -v
       - name: Check installer shell syntax
         run: |
-          for script in install.sh tools/install-docker.sh; do
+          for script in bootstrap.sh install.sh tools/install-docker.sh; do
             bash -n "$script"
           done
       - run: node tests/workflow.test.cjs
