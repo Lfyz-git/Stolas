@@ -26,7 +26,9 @@ class LoopbackTests(unittest.TestCase):
             cfg = copy.deepcopy(DEFAULT)
             cfg.update(seconds=1, parallel=1, attempts_per_server=1, min_interval=0)
             cfg["route"]["mode"] = "off"
-            cfg["servers"] = [{"id": "loopback", "host": "127.0.0.1", "ports": [port], "min_download_mbps": 0, "min_upload_mbps": 0}]
+            cfg["server_groups"]["primary"]["servers"] = [{"id": "loopback", "host": "127.0.0.1", "ports": [port], "min_download_mbps": 0, "min_upload_mbps": 0}]
+            for group in ("additional", "emergency"):
+                cfg["server_groups"][group]["servers"] = []
             with tempfile.TemporaryDirectory() as directory:
                 result = Runner(cfg, Store(directory)).run()
                 self.assertEqual(result["status"], "ok", result)

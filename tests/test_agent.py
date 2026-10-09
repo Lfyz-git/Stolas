@@ -147,7 +147,7 @@ class AgentTests(unittest.TestCase):
 
     def test_cli_real_process_fail_closed_json(self):
         cfg = copy.deepcopy(DEFAULT)
-        cfg["servers"] = [dict(cfg["servers"][0], host="127.0.0.1")]
+        cfg["server_groups"]["primary"]["servers"] = [dict(cfg["server_groups"]["primary"]["servers"][0], host="127.0.0.1")]
         path = os.path.join(self.tmp.name, "config.json")
         with open(path, "w") as file:
             json.dump(cfg, file)
@@ -173,7 +173,7 @@ class AgentTests(unittest.TestCase):
         with patch.dict(os.environ, {"STOLAS_SECONDS": "0"}):
             with self.assertRaises(ValueError):
                 load()
-        with patch.dict(os.environ, {"STOLAS_SERVERS": json.dumps([dict(DEFAULT["servers"][0], host="--help")])}):
+        with patch.dict(os.environ, {"STOLAS_SERVERS": json.dumps([dict(DEFAULT["server_groups"]["primary"]["servers"][0], host="--help")])}):
             with self.assertRaises(ValueError):
                 load()
 

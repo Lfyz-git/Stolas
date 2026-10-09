@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from agent.config import DEFAULT, load  # noqa: E402
+from agent.config import DEFAULT, GROUPS, load  # noqa: E402
 
 
 def ask(label, default="", convert=str, secret=False):
@@ -43,10 +43,10 @@ def choice(label, values, default):
     return ask(label + " (" + "/".join(values) + ")", default, parse)
 
 
-def integer(low, high):
+def integer(low, high=None):
     def parse(value):
         result = int(value)
-        if not low <= result <= high:
+        if result < low or (high is not None and result > high):
             raise ValueError()
         return result
     return parse
@@ -184,23 +184,35 @@ def collect_config(existing):
     route["expected_public_cidrs"] = ask("Внешний IPv4 основного WAN /32 или CIDR через запятую" + (" (-: очистить)" if route["mode"] == "off" else ""), ",".join(route["expected_public_cidrs"]), lambda v: [] if route["mode"] == "off" and v in ("", "-") else cidrs(v))
     for key, label in (("interface", "Интерфейс Linux"), ("gateway", "Шлюз Linux")):
         route[key] = ask(label + " (-: не проверять)", route[key] or "", lambda v: optional(v, matching(r"[\w.:-]{1,64}")))
-    print("\nСерверы iperf3. Порядок: основной, затем резервные/подтверждающие.")
-    count = ask("Количество серверов", len(cfg["servers"]), integer(1, 16))
-    result = []
-    for index in range(count):
-        server = copy.deepcopy(cfg["servers"][index]) if index < len(cfg["servers"]) else dict(id=f"server-{index + 1}", host="", ports=[5201], min_download_mbps=500, min_upload_mbps=500)
-        print(f"Сервер {index + 1}")
-        for key, label, pattern in (("id", "Идентификатор", r"[a-zA-Z0-9_-]{1,64}"), ("host", "Hostname или IPv4", r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}")):
-            while True:
-                server[key] = ask(label, server[key], matching(pattern))
-                if all(s[key].lower() != server[key].lower() for s in result):
-                    break
-                print("Серверы должны иметь разные имена и адреса.")
-        server["ports"] = ask("Порты через запятую (максимум 9)", ",".join(map(str, server["ports"])), ports)
-        for key, label in (("min_download_mbps", "Минимальный download, Mbps"), ("min_upload_mbps", "Минимальный upload, Mbps")):
-            server[key] = ask(label, server[key], number)
-        result.append(server)
-    cfg["servers"] = result
+    print("\nГруппы серверов iperf3. В каждой можно задать любое количество серверов.")
+    print("sequential — очередь с сохранением позиции; random — случайный порядок без повторов в цикле.")
+    descriptions = {
+        "primary": "Основные: обычный замер; сначала перебираются серверы этой группы",
+        "additional": "Дополнительные: подтверждение низкой скорости или подмена недоступных основных",
+        "emergency": "Аварийные: последняя подмена/подтверждение, если предыдущие группы не справились",
+    }
+    all_servers = []
+    for name in GROUPS:
+        print(descriptions[name])
+        group = cfg["server_groups"][name]
+        group["selection"] = choice("Выбор сервера в группе " + name, ("sequential", "random"), group["selection"])
+        count = ask("Количество серверов в " + name + " (без верхнего ограничения)", len(group["servers"]), integer(1 if name == "primary" else 0))
+        result = []
+        for index in range(count):
+            server = copy.deepcopy(group["servers"][index]) if index < len(group["servers"]) else dict(id=f"{name}-{index + 1}", host="", ports=[5201], min_download_mbps=500, min_upload_mbps=500)
+            print(f"{name}: сервер {index + 1}")
+            for key, label, pattern in (("id", "Идентификатор", r"[a-zA-Z0-9_-]{1,64}"), ("host", "Hostname или IPv4", r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}")):
+                while True:
+                    server[key] = ask(label, server[key], matching(pattern))
+                    if all(s[key].lower() != server[key].lower() for s in all_servers):
+                        break
+                    print("Серверы во всех группах должны иметь разные имена и адреса.")
+            server["ports"] = ask("Порты через запятую (максимум 9)", ",".join(map(str, server["ports"])), ports)
+            for key, label in (("min_download_mbps", "Минимальный download, Mbps"), ("min_upload_mbps", "Минимальный upload, Mbps")):
+                server[key] = ask(label, server[key], number)
+            result.append(server)
+            all_servers.append(server)
+        group["servers"] = result
     return cfg
 
 
@@ -291,7 +303,7 @@ def first_test(compose, root):
     for name in ("primary", "confirmation"):
         sample = data.get(name)
         if sample:
-            print(f"  {sample['server']}: DL {sample['download']['mbps']} / UL {sample['upload']['mbps']} Mbps")
+            print(f"  {sample['server']} [{sample.get('group', 'legacy')}]: DL {sample['download']['mbps']} / UL {sample['upload']['mbps']} Mbps")
     return data
 
 

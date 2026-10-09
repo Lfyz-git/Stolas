@@ -84,14 +84,37 @@ class InstallerTests(unittest.TestCase):
 
     def test_defaults_are_all_prompted_and_route_must_be_explicit(self):
         # 1 node + 10 numeric + bind + guard + URL + CIDRs + interface/gateway
-        # + count + five fields for each of the three default servers.
-        answers = [""] * 12 + ["", "", "192.0.2.1/32", "", "", ""] + [""] * 15
+        # + selection, count and five fields in each of the three groups.
+        answers = [""] * 12 + ["", "", "192.0.2.1/32", "", ""] + [""] * 21
         with patch("builtins.input", side_effect=answers) as prompt:
             actual = installer.collect_config(copy.deepcopy(installer.DEFAULT))
         self.assertEqual(prompt.call_count, len(answers))
         self.assertEqual(actual, self.cfg)
         with self.assertRaises(ValueError):
             installer.cidrs("")
+
+    def test_wizard_accepts_more_than_sixteen_servers_and_empty_secondary_groups(self):
+        count = 0
+
+        def reply(prompt):
+            nonlocal count
+            if prompt.startswith("Количество серверов в primary"):
+                return "17"
+            if prompt.startswith("Количество серверов в"):
+                return "0"
+            if prompt.startswith("Выбор сервера в группе primary"):
+                return "random"
+            if prompt == "Hostname или IPv4: ":
+                count += 1
+                return f"custom-{count}.example.test"
+            return ""
+
+        with patch("builtins.input", side_effect=reply):
+            cfg = installer.collect_config(copy.deepcopy(self.cfg))
+        self.assertEqual(len(cfg["server_groups"]["primary"]["servers"]), 17)
+        self.assertEqual(cfg["server_groups"]["primary"]["selection"], "random")
+        for name in ("additional", "emergency"):
+            self.assertEqual(cfg["server_groups"][name]["servers"], [])
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux shell entry point")
     def test_shell_entrypoint_with_scripted_input_and_fake_docker(self):
@@ -115,7 +138,7 @@ elif "exec" in sys.argv:
     print(json.dumps({"status": "ok", "primary": None, "confirmation": None}))
 ''')
         stub.chmod(0o755)
-        answers = [""] * 12 + ["", "", "192.0.2.1/32", "", "", ""] + [""] * 15 + ["", "", "", "later"]
+        answers = [""] * 12 + ["", "", "192.0.2.1/32", "", ""] + [""] * 21 + ["", "", "", "later"]
         env = installer.clean_env()
         env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
         result = subprocess.run(["sh", "install.sh"], cwd=self.root, env=env, input="\n".join(answers) + "\n", capture_output=True, text=True, timeout=30)

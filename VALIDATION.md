@@ -32,3 +32,14 @@ Interactive installer update (2026-10-09, Windows, Python 3.11):
 - Shell syntax checked with Git Bash; CI repeats both shell syntax checks.
 - Fresh-host apt/Docker installation, live n8n credentials/Telegram delivery and
   the initial speed test over a real deployment WAN still require a Linux host.
+
+Server group update (2026-10-09):
+
+- Added primary/additional/emergency groups with independently configured random
+  or sequential selection and no configured limit on server count.
+- Group tests cover 100 servers per group, legacy configuration migration,
+  persistent round-robin across restarts/pruning, random fallback without repeats,
+  group escalation, independent confirmation, periodic group sampling and deadline.
+- Installer tests cover separate group prompts, random selection, 17 primary
+  servers and empty secondary groups. Local suite: 54 passed, two Linux/iperf3
+  integration tests skipped on Windows.

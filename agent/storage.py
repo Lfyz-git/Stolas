@@ -16,6 +16,7 @@ class Store:
         self.path = self.directory / "history.sqlite3"
         with self.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS results (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE, started REAL, body TEXT)")
+            db.execute("CREATE TABLE IF NOT EXISTS server_cursors (name TEXT PRIMARY KEY, next_index INTEGER NOT NULL)")
 
     @contextlib.contextmanager
     def connect(self):
@@ -60,6 +61,14 @@ class Store:
     def sequence(self):
         with self.connect() as db:
             return db.execute("SELECT coalesce(max(seq),0) FROM results").fetchone()[0]
+
+    def next_server_index(self, group, count):
+        """Advance a group's round-robin cursor; caller holds the cycle lock."""
+        with self.connect() as db:
+            row = db.execute("SELECT next_index FROM server_cursors WHERE name=?", (group,)).fetchone()
+            index = (row[0] if row else 0) % count
+            db.execute("INSERT INTO server_cursors(name,next_index) VALUES (?,?) ON CONFLICT(name) DO UPDATE SET next_index=excluded.next_index", (group, (index + 1) % count))
+        return index
 
     def save(self, result, limit):
         with self.connect() as db:
