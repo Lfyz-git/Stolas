@@ -1,7 +1,7 @@
 # Проверки Stolas v0.4.0
 
-- Локально, Windows / Python 3.11: unittest suite; Linux PTY, shell/permissions,
-  Docker и iperf3 проверяются отдельно в Linux CI, без фиктивных результатов.
+- Локально, Windows / Python 3.11: 152 теста, 130 прошли, 22 явно пропущены
+  для Linux PTY, shell/permissions, Docker и iperf3; shell syntax и config validate прошли.
 - Новые регрессии: Core без n8n/Telegram; старые черновики; продолжение и отмена;
   восстановление пары config/.env; независимая интеграция и её безопасный отказ.
 - Терминал: полный диалог, TTY/NO_COLOR/TERM=dumb, 80 колонок, длинные значения,
@@ -11,6 +11,11 @@
 - CI: весь Linux suite, настоящий pinned n8n API с существующими credentials,
   импорт всех трёх политик workflow, Alloy validate, две изолированные Docker-сети,
   nonroot production image, реальный loopback iperf3, API и Compose.
+- Успешный CI исходников: https://github.com/Lfyz-git/Stolas/actions/runs/37951784118
+  (481da74): Linux suite — 152 теста, 149 прошли, 3 opt-in/iperf3 пропущены;
+  отдельно прошли 14 проверок интеграции с настоящим n8n и 27 сетевых сценариев.
+  В production image — 62 теста прошли, 90 installer/opt-in тестов пропущены;
+  настоящий iperf3 loopback выполнен. Alloy, Node.js workflow и Compose проверены.
 - UI SVG и полный текст: docs/INSTALLER_UX.md. Это воспроизводимая UI-фикстура,
   не развёртывание на Azazel. Сырой PTY-вывод доступен в CI artifact installer-terminal.
 - Архитектура/JSON результатов/эндпоинты измерительного агента сохранены.
