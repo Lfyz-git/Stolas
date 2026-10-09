@@ -18,5 +18,17 @@ Not yet verified in this environment:
 - Import/execution in a live n8n instance and Telegram delivery.
 - Main-WAN routing and public speed servers on the deployment host.
 
-The checked-in CI builds the image and runs the loopback integration without
-contacting public speed servers. It has not run until the repository is published.
+The initial GitHub Actions run succeeded after publication, including the Docker
+build, production-image loopback test and Compose validation:
+https://github.com/Lfyz-git/Stolas/actions/runs/37916667252
+
+Interactive installer update (2026-10-09, Windows, Python 3.11):
+
+- 11 installer tests passed locally: parameter prompts, configuration validation,
+  atomic backups, secret handling, deferred n8n, first CLI cycle orchestration,
+  unsuccessful measurements, and a real local HTTP test of n8n API provisioning.
+- Linux shell-to-wizard-to-Compose integration uses a fake Docker executable in
+  CI; skipped on Windows. It performs no package installation or public test.
+- Shell syntax checked with Git Bash; CI repeats both shell syntax checks.
+- Fresh-host apt/Docker installation, live n8n credentials/Telegram delivery and
+  the initial speed test over a real deployment WAN still require a Linux host.

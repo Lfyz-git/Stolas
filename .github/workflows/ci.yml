@@ -13,6 +13,11 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 -m unittest discover -s tests -v
+      - name: Check installer shell syntax
+        run: |
+          for script in install.sh tools/install-docker.sh; do
+            bash -n "$script"
+          done
       - run: node tests/workflow.test.cjs
       - run: python3 -m agent validate --config config/example.json
       - run: docker build --tag stolas:ci .
