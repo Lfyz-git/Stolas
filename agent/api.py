@@ -9,6 +9,7 @@ from socketserver import ThreadingMixIn
 
 from .runner import Cooldown
 from .storage import Busy
+from .events import emit
 
 
 class BoundedServer(ThreadingMixIn, HTTPServer):
@@ -26,6 +27,7 @@ class BoundedServer(ThreadingMixIn, HTTPServer):
 
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
+            emit("api_rejected", "WARNING", reason="capacity")
             self.shutdown_request(request)
             return
         try:
@@ -40,6 +42,9 @@ class BoundedServer(ThreadingMixIn, HTTPServer):
         finally:
             self.slots.release()
 
+    def handle_error(self, request, client_address):
+        emit("api_error", "ERROR", reason="request_failed")
+
 
 def make_server(runner, address, token):
     if not token or len(token) < 32 or token.startswith("CHANGE") or not token.isascii() or any(c.isspace() for c in token):
@@ -52,7 +57,12 @@ def make_server(runner, address, token):
         def log_message(self, *args):
             pass  # Never log credentials, client addresses or raw request paths.
 
+        def send_error(self, code, message=None, explain=None):
+            self.reply(code, {"error": "invalid_request"})
+
         def reply(self, code, body):
+            if code >= 400:
+                emit("api_error" if code >= 500 else "api_rejected", "ERROR" if code >= 500 else "WARNING", http_status=code)
             data = json.dumps(body, allow_nan=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
@@ -75,6 +85,12 @@ def make_server(runner, address, token):
         def do_GET(self):
             if not self.authenticated():
                 return
+            try:
+                self.get_result()
+            except Exception:
+                self.reply(500, {"error": "internal_error"})
+
+        def get_result(self):
             if self.path == "/healthz":
                 self.reply(200, {"status": "ready"})
             elif self.path == "/v1/results/latest":

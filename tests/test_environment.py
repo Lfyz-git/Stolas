@@ -15,7 +15,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 HAS_TOOLS = (ROOT / "tools/environment.py").exists()
 if HAS_TOOLS:
-    from tools import environment as env, install, deploy
+    from tools import environment as env, install, deploy, integrate
 
 
 def fixtures(root):
@@ -72,7 +72,7 @@ class DiscoveryTests(unittest.TestCase):
     def topology(self, answers=None, facts=None):
         api = {"STOLAS_LISTEN": "127.0.0.1", "STOLAS_PORT": "8080", "STOLAS_API_TOKEN": "a" * 40}
         with patch("builtins.input", side_effect=answers or ["docker"]) as prompt, patch.object(env, "port_state", return_value="free"):
-            result = install.collect_topology(api, facts or self.discover(), self.root)
+            result = integrate.collect_topology(api, facts or self.discover(), self.root)
         return api, result, prompt.call_count
 
     def test_official_image_with_arbitrary_name_is_auto_selected(self):
@@ -167,7 +167,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_busy_port_selects_free_port_and_recomputes_endpoint(self):
         api = {"STOLAS_LISTEN": "127.0.0.1", "STOLAS_PORT": "8080"}
         with patch("builtins.input", side_effect=["docker"]), patch.object(env, "port_state", side_effect=["busy", "free"]):
-            result = install.collect_topology(api, self.discover(), self.root)
+            result = integrate.collect_topology(api, self.discover(), self.root)
         self.assertEqual(result["endpoint"], "http://172.18.0.1:8081")
         self.assertIn("8080 занят", self.output.getvalue())
 
@@ -188,11 +188,12 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_standard_wizard_never_asks_gateway_ip_or_computed_url(self):
         facts = self.discover()
-        answers = ["", "192.0.2.1/32", "export", "", "12345", "", "apply"]
+        answers = ["", "192.0.2.1/32", "apply"]
         with patch("builtins.input", side_effect=answers) as prompt, patch.object(env, "port_state", return_value="free"):
             plan = install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
         self.assertEqual(prompt.call_count, len(answers))
-        self.assertEqual(plan["n8n"]["endpoint"], "http://172.18.0.1:8080")
+        self.assertNotIn("n8n", plan)
+        self.assertEqual(plan["api"]["STOLAS_LISTEN"], "127.0.0.1")
         prompts = "\n".join(call.args[0] for call in prompt.call_args_list)
         self.assertNotIn("gateway", prompts.lower())
         self.assertNotIn("URL", prompts)
@@ -203,7 +204,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_cancel_and_back_keep_live_configuration_untouched(self):
         facts = self.discover()
-        answers = ["", "192.0.2.1/32", ":back", "off", "later", "api", ":back", "cancel"]
+        answers = ["", "192.0.2.1/32", ":back", "off", "api", ":back", "cancel"]
         with patch("builtins.input", side_effect=answers), patch.object(env, "port_state", return_value="free"), self.assertRaises(install.Cancel):
             install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
         self.assertFalse((self.root / ".env").exists())
@@ -217,10 +218,10 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(draft["completed"], ["wan"])
         if os.name != "nt":
             self.assertEqual((self.root / ".stolas-draft.json").stat().st_mode & 0o777, 0o600)
-        with patch("builtins.input", side_effect=["resume", "later", "apply"]) as prompt, patch.object(env, "port_state", return_value="free"):
+        with patch("builtins.input", side_effect=["resume", "apply"]) as prompt, patch.object(env, "port_state", return_value="free"):
             plan = install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
         self.assertEqual(plan["api"]["STOLAS_API_TOKEN"], draft["api"]["STOLAS_API_TOKEN"])
-        self.assertEqual(prompt.call_count, 3)
+        self.assertEqual(prompt.call_count, 2)
 
     def test_existing_configuration_opens_summary_without_reasking_fields(self):
         facts = self.discover()
@@ -244,8 +245,8 @@ class DiscoveryTests(unittest.TestCase):
         self.assertNotIn("my-sensitive-value", self.output.getvalue())
 
     def test_network_probe_failure_is_not_replaced_with_host_success(self):
-        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "")), patch.object(install, "request_json") as host, self.assertRaisesRegex(RuntimeError, "не достигает"):
-            install.check_connection(self.root, {"topology": "docker", "docker_id": "abc", "endpoint": "http://172.18.0.1:8080"}, {"STOLAS_API_TOKEN": "a" * 40}, ["docker", "compose"])
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "")), patch.object(integrate, "request_json") as host, self.assertRaisesRegex(RuntimeError, "не достигает"):
+            integrate.check_connection(self.root, {"topology": "docker", "docker_id": "abc", "endpoint": "http://172.18.0.1:8080"}, {"STOLAS_API_TOKEN": "a" * 40}, ["docker", "compose"])
         host.assert_not_called()
 
     def test_diagnosis_does_not_create_target_or_lock(self):
@@ -261,26 +262,27 @@ class DiscoveryTests(unittest.TestCase):
         choices = {"config": copy.deepcopy(install.DEFAULT), "api": api, "n8n": {**options, "mode": "keep"}}
         facts["addresses"] = facts["addresses"][:1]
         with self.assertRaisesRegex(ValueError, "endpoint"):
-            install.validate_discovered_endpoint(choices, facts)
+            integrate.validate_discovered_endpoint(choices, facts)
 
-    def test_api_key_checkpoint_survives_interrupt_before_bot_token(self):
+    def test_legacy_draft_discards_integration_secrets_and_resumes_core(self):
         facts = self.discover()
-        with patch("builtins.input", side_effect=["", "192.0.2.1/32", "api", "", "12345", "", "https://n8n.example.test"]), patch.object(install.getpass, "getpass", side_effect=["remembered-private-key", KeyboardInterrupt]), patch.object(env, "port_state", return_value="free"), self.assertRaises(KeyboardInterrupt):
-            install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
-        draft = json.loads((self.root / ".stolas-draft.json").read_text())
-        self.assertEqual(draft["n8n"]["key"], "remembered-private-key")
-        with patch("builtins.input", side_effect=["resume", "", "", "apply"]), patch.object(install.getpass, "getpass", return_value="123:bot_token") as secret, patch.object(env, "port_state", return_value="free"):
-            plan = install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
-        self.assertEqual(secret.call_count, 1)  # Only the missing bot token.
-        self.assertEqual(plan["n8n"]["key"], "remembered-private-key")
-        self.assertNotIn("remembered-private-key", self.output.getvalue())
+        cfg = copy.deepcopy(install.DEFAULT)
+        cfg["route"]["expected_public_cidrs"] = ["192.0.2.1/32"]
+        old = dict(config=cfg, api=dict(STOLAS_LISTEN="127.0.0.1", STOLAS_PORT="8080", STOLAS_API_TOKEN="a"*40), completed=["wan", "n8n"], n8n=dict(mode="api", key="old-key", bot_token="old-bot-secret"))
+        (self.root / ".stolas-draft.json").write_text(json.dumps(old))
+        with patch("builtins.input", side_effect=["resume", "apply"]), patch.object(install.getpass, "getpass") as hidden, patch.object(env, "port_state", return_value="free"):
+            plan = install.collect_plan(self.root, cfg, facts)
+        hidden.assert_not_called()
+        self.assertNotIn("n8n", plan)
+        self.assertNotIn("old-key", (self.root / ".stolas-draft.json").read_text())
+        self.assertNotIn("old-bot-secret", (self.root / ".stolas-draft.json").read_text())
 
     def test_port_race_requires_review_of_recomputed_url(self):
         facts = self.discover()
-        answers = ["", "192.0.2.1/32", "export", "", "12345", "", "apply", "apply"]
-        with patch("builtins.input", side_effect=answers), patch.object(env, "port_state", side_effect=["free", "free", "busy", "free", "free"]):
+        answers = ["", "192.0.2.1/32", "apply", "apply"]
+        with patch("builtins.input", side_effect=answers), patch.object(env, "port_state", side_effect=["free", "busy", "free", "free"]):
             plan = install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
-        self.assertEqual(plan["n8n"]["endpoint"], "http://172.18.0.1:8081")
+        self.assertEqual(plan["api"]["STOLAS_PORT"], "8081")
         self.assertIn("сводку ещё раз", self.output.getvalue())
 
     def test_partial_old_checkout_runs_wizard_instead_of_reuse(self):
@@ -306,27 +308,6 @@ class DiscoveryTests(unittest.TestCase):
         with patch.object(deploy, "run_installer", return_value=0):
             self.assertEqual(deploy.deploy(source, target), 0)
 
-    def test_n8n_pending_create_never_repeats_and_known_credential_is_reused(self):
-        (self.root / "n8n").mkdir()
-        options = dict(mode="api", endpoint="https://stolas.example.test", url="https://n8n.example.test", key="private", bot_token="123:private")
-        state_path = self.root / "n8n/install-state.json"
-        state = {"url": options["url"], "credentials": [{"type": "httpHeaderAuth", "id": "known", "name": "Stolas API"}]}
-        state_path.write_text(json.dumps(state))
-        calls = []
-        def request(base, path, token, body=None, n8n=False):
-            if body:
-                calls.append((path, body))
-                return {"id": "new-" + str(len(calls))}
-            return {"status": "ready", "properties": {"name": {}, "value": {}, "accessToken": {}}}
-        data = {"nodes": [{"name": name} for name in ("Run Stolas", "Read summary", "Telegram alert")], "name": "test", "settings": {}, "connections": {}}
-        with patch.object(install, "request_json", side_effect=request):
-            install.connect_n8n(self.root, options, {"STOLAS_API_TOKEN": "a" * 40}, data)
-        self.assertEqual([p for p, body in calls], ["/credentials", "/workflows"])
-        self.assertEqual(calls[0][1]["type"], "telegramApi")
-        state_path.write_text(json.dumps({**state, "pending": "telegramApi"}))
-        with patch.object(install, "request_json", side_effect=request), self.assertRaisesRegex(RuntimeError, "мог создать"):
-            install.connect_n8n(self.root, options, {"STOLAS_API_TOKEN": "a" * 40}, data)
-        self.assertEqual(len(calls), 2)
 
 
 @unittest.skipUnless(HAS_TOOLS and os.environ.get("STOLAS_DOCKER_INTEGRATION") == "1", "Opt-in isolated Linux Docker integration")
@@ -358,9 +339,9 @@ class DockerNetworkIntegrationTests(unittest.TestCase):
                     thread.start()
                     try:
                         options = {"topology": "docker", "docker_id": container, "endpoint": f"http://{choice['address']}:{server.server_port}"}
-                        install.check_connection(root, options, {"STOLAS_API_TOKEN": "a" * 40}, ["docker", "compose"])
+                        integrate.check_connection(root, options, {"STOLAS_API_TOKEN": "a" * 40}, ["docker", "compose"])
                         with self.assertRaises(RuntimeError):
-                            install.check_connection(root, options, {"STOLAS_API_TOKEN": "b" * 40}, ["docker", "compose"])
+                            integrate.check_connection(root, options, {"STOLAS_API_TOKEN": "b" * 40}, ["docker", "compose"])
                     finally:
                         server.shutdown()
                         server.server_close()

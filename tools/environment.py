@@ -3,6 +3,7 @@ import errno
 import ipaddress
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import shutil
@@ -34,6 +35,7 @@ def ipv4(value):
 def discover(root):
     root = Path(root).absolute()
     facts = {"hostname": socket.gethostname(), "tools": {name: bool(shutil.which(name)) for name in ("docker", "ip", "curl", "wget", "tar", "python3", "apt-get", "sudo")},
+             "system": platform.system(), "architecture": platform.machine(),
              "addresses": [], "n8n": [], "stolas": [], "networks": {}, "warnings": [],
              "docker": {"available": False, "command": [], "reason": "Docker не установлен"},
              "installation": {"directory": str(root), "config": (root / "config/local.json").is_file(),

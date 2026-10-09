@@ -5,7 +5,7 @@ main() {
     set -eu
     umask 022
     target=""
-    ref=v0.3.0
+    ref=v0.4.0
     expected=""
     action=""
     workdir=""
@@ -15,7 +15,7 @@ main() {
         cat <<'EOF'
 Установка Stolas без Git (Linux).
   --dir PATH          каталог установки (по умолчанию: $HOME/stolas)
-  --ref REF           релиз, ветка или SHA (по умолчанию: v0.3.0)
+  --ref REF           релиз, ветка или SHA (по умолчанию: v0.4.0)
   --sha256 HASH       ожидаемый SHA-256 архива при установке SHA/main
   --action ACTION     reconfigure/update/rollback/cancel для существующей установки
   --configure-only    только подготовить настройки, без Docker и теста
@@ -125,7 +125,7 @@ EOF
     mkdir "$workdir/unpacked"
     tar -xzf "$archive" -C "$workdir/unpacked" --no-same-owner --no-same-permissions
     source="$workdir/unpacked/$prefix"
-    for file in install.sh tools/install.py tools/deploy.py tools/environment.py agent/config.py compose.yaml config/example.json; do
+    for file in install.sh tools/install.py tools/deploy.py tools/environment.py tools/terminal.py agent/config.py compose.yaml config/example.json; do
         [ -f "$source/$file" ] && [ ! -L "$source/$file" ] || fail "В архиве отсутствует $file."
     done
     printf 'Запуск интерактивного мастера…\n'

@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="1740" viewBox="0 0 880 1740">
+<rect width="100%" height="100%" fill="#111827"/>
+<g font-family="DejaVu Sans Mono,Consolas,monospace" font-size="16">
+<text x="24" y="30" xml:space="preserve"></text>
+<text x="24" y="50" xml:space="preserve"><tspan fill="#67e8f9">────────────────────────────────────────────────────────────────────────────────</tspan></text>
+<text x="24" y="70" xml:space="preserve"><tspan fill="#67e8f9">STOLAS · Проверка системы</tspan></text>
+<text x="24" y="90" xml:space="preserve"><tspan fill="#67e8f9">Шаг 1 из 4</tspan></text>
+<text x="24" y="110" xml:space="preserve"><tspan fill="#67e8f9">────────────────────────────────────────────────────────────────────────────────</tspan></text>
+<text x="24" y="130" xml:space="preserve"></text>
+<text x="24" y="150" xml:space="preserve"><tspan fill="#e5e7eb">Каталог: /opt/stolas</tspan></text>
+<text x="24" y="170" xml:space="preserve"><tspan fill="#e5e7eb">Система: Linux; узел: example-node</tspan></text>
+<text x="24" y="190" xml:space="preserve"><tspan fill="#86efac">Готово: Docker доступен</tspan></text>
+<text x="24" y="210" xml:space="preserve"></text>
+<text x="24" y="230" xml:space="preserve"><tspan fill="#e5e7eb">Enter — принять. :back — назад; :cancel — отмена.</tspan></text>
+<text x="24" y="250" xml:space="preserve"><tspan fill="#e5e7eb">:rescan — обновить. Ctrl+C — сохранить и выйти.</tspan></text>
+<text x="24" y="270" xml:space="preserve"></text>
+<text x="24" y="290" xml:space="preserve"><tspan fill="#67e8f9">────────────────────────────────────────────────────────────────────────────────</tspan></text>
+<text x="24" y="310" xml:space="preserve"><tspan fill="#67e8f9">STOLAS · Проверка интернет-канала</tspan></text>
+<text x="24" y="330" xml:space="preserve"><tspan fill="#67e8f9">Шаг 2 из 4</tspan></text>
+<text x="24" y="350" xml:space="preserve"><tspan fill="#67e8f9">────────────────────────────────────────────────────────────────────────────────</tspan></text>
+<text x="24" y="370" xml:space="preserve"></text>
+<text x="24" y="390" xml:space="preserve"><tspan fill="#e5e7eb">Основной канал: пока не подтверждён</tspan></text>
+<text x="24" y="410" xml:space="preserve"><tspan fill="#e5e7eb">Разрешённые IP: не заданы</tspan></text>
+<text x="24" y="430" xml:space="preserve"></text>
+<text x="24" y="450" xml:space="preserve"><tspan fill="#e5e7eb">Перед тестом Stolas сверит внешний IP с разрешёнными адресами.</tspan></text>
+<text x="24" y="470" xml:space="preserve"></text>
+<text x="24" y="490" xml:space="preserve"><tspan fill="#e5e7eb">Проверять основной канал перед тестами?</tspan></text>
+<text x="24" y="510" xml:space="preserve"></text>
+<text x="24" y="530" xml:space="preserve"><tspan fill="#e5e7eb">  1. Да, проверять (рекомендуется)</tspan></text>
+<text x="24" y="550" xml:space="preserve"><tspan fill="#e5e7eb">  2. Нет, пропускать проверку</tspan></text>
+<text x="24" y="570" xml:space="preserve"></text>
+<text x="24" y="590" xml:space="preserve"><tspan fill="#e5e7eb">Выберите вариант</tspan></text>
+<text x="24" y="610" xml:space="preserve"><tspan fill="#67e8f9">Ввод [1]: </tspan></text>
+<text x="24" y="630" xml:space="preserve"></text>
+<text x="24" y="650" xml:space="preserve"><tspan fill="#e5e7eb">Укажите внешний IPv4 основного подключения или диапазон провайдера.</tspan></text>
+<text x="24" y="670" xml:space="preserve"><tspan fill="#e5e7eb">Например: 203.0.113.10/32. При смене адреса настройку нужно обновить.</tspan></text>
+<text x="24" y="690" xml:space="preserve"></text>
+<text x="24" y="710" xml:space="preserve"><tspan fill="#e5e7eb">Разрешённые IP (через запятую)</tspan></text>
+<text x="24" y="730" xml:space="preserve"><tspan fill="#67e8f9">Ввод: </tspan><tspan fill="#e5e7eb">192.0.2.1/32</tspan></text>
+<text x="24" y="750" xml:space="preserve"></text>
+<text x="24" y="770" xml:space="preserve"><tspan fill="#67e8f9">────────────────────────────────────────────────────────────────────────────────</tspan></text>
+<text x="24" y="790" xml:space="preserve"><tspan fill="#67e8f9">STOLAS · Проверьте настройки</tspan></text>
+<text x="24" y="810" xml:space="preserve"><tspan fill="#67e8f9">Шаг 3 из 4</tspan></text>
+<text x="24" y="830" xml:space="preserve"><tspan fill="#67e8f9">────────────────────────────────────────────────────────────────────────────────</tspan></text>
+<text x="24" y="850" xml:space="preserve"></text>
+<text x="24" y="870" xml:space="preserve"><tspan fill="#e5e7eb">Узел: example-node</tspan></text>
+<text x="24" y="890" xml:space="preserve"><tspan fill="#e5e7eb">Измерение: 4 потока, 10 секунд на направление</tspan></text>
+<text x="24" y="910" xml:space="preserve"><tspan fill="#e5e7eb">Основные: spd-rudp.hostkey.ru (По очереди)</tspan></text>
+<text x="24" y="930" xml:space="preserve"><tspan fill="#e5e7eb">Дополнительные: mskst.st.mtsws.net (По очереди)</tspan></text>
+<text x="24" y="950" xml:space="preserve"><tspan fill="#e5e7eb">Аварийные: msk.speed.ruweb.net (По очереди)</tspan></text>
+<text x="24" y="970" xml:space="preserve"></text>
+<text x="24" y="990" xml:space="preserve"><tspan fill="#e5e7eb">Проверка канала: включена</tspan></text>
+<text x="24" y="1010" xml:space="preserve"><tspan fill="#e5e7eb">Разрешённые IP: 192.0.2.1/32</tspan></text>
+<text x="24" y="1030" xml:space="preserve"><tspan fill="#e5e7eb">API: http://127.0.0.1:8080</tspan></text>
+<text x="24" y="1050" xml:space="preserve"><tspan fill="#e5e7eb">Токен API: сохранён / создан автоматически; скрыт</tspan></text>
+<text x="24" y="1070" xml:space="preserve"></text>
+<text x="24" y="1090" xml:space="preserve"><tspan fill="#e5e7eb">Будет запущен Stolas Core. Затем — один тест скорости.</tspan></text>
+<text x="24" y="1110" xml:space="preserve"></text>
+<text x="24" y="1130" xml:space="preserve"><tspan fill="#e5e7eb">Что сделать?</tspan></text>
+<text x="24" y="1150" xml:space="preserve"></text>
+<text x="24" y="1170" xml:space="preserve"><tspan fill="#e5e7eb">  1. Установить / применить</tspan></text>
+<text x="24" y="1190" xml:space="preserve"><tspan fill="#e5e7eb">  2. Проверка интернет-канала</tspan></text>
+<text x="24" y="1210" xml:space="preserve"><tspan fill="#e5e7eb">  3. Параметры измерений и серверы</tspan></text>
+<text x="24" y="1230" xml:space="preserve"><tspan fill="#e5e7eb">  4. Доступ к API</tspan></text>
+<text x="24" y="1250" xml:space="preserve"><tspan fill="#e5e7eb">  5. Повторить обнаружение</tspan></text>
+<text x="24" y="1270" xml:space="preserve"><tspan fill="#e5e7eb">  6. Отменить</tspan></text>
+<text x="24" y="1290" xml:space="preserve"></text>
+<text x="24" y="1310" xml:space="preserve"><tspan fill="#e5e7eb">Выберите вариант</tspan></text>
+<text x="24" y="1330" xml:space="preserve"><tspan fill="#67e8f9">Ввод [1]: </tspan></text>
+<text x="24" y="1350" xml:space="preserve"></text>
+<text x="24" y="1370" xml:space="preserve"><tspan fill="#e5e7eb">Настройки сохранены. Старые версии файлов сохранены рядом как .bak-*.</tspan></text>
+<text x="24" y="1390" xml:space="preserve"></text>
+<text x="24" y="1410" xml:space="preserve"><tspan fill="#67e8f9">────────────────────────────────────────────────────────────────────────────────</tspan></text>
+<text x="24" y="1430" xml:space="preserve"><tspan fill="#67e8f9">STOLAS · Установка и проверка</tspan></text>
+<text x="24" y="1450" xml:space="preserve"><tspan fill="#67e8f9">Шаг 4 из 4</tspan></text>
+<text x="24" y="1470" xml:space="preserve"><tspan fill="#67e8f9">────────────────────────────────────────────────────────────────────────────────</tspan></text>
+<text x="24" y="1490" xml:space="preserve"></text>
+<text x="24" y="1510" xml:space="preserve"><tspan fill="#e5e7eb">Сборка образа — первый запуск может занять несколько минут…</tspan></text>
+<text x="24" y="1530" xml:space="preserve"><tspan fill="#86efac">Готово: образ собран</tspan></text>
+<text x="24" y="1550" xml:space="preserve"><tspan fill="#86efac">Готово: API отвечает, авторизация проверена</tspan></text>
+<text x="24" y="1570" xml:space="preserve"></text>
+<text x="24" y="1590" xml:space="preserve"><tspan fill="#e5e7eb">Первичный тест скорости через CLI (может занять несколько минут)…</tspan></text>
+<text x="24" y="1610" xml:space="preserve"><tspan fill="#e5e7eb">Результат теста: успешно</tspan></text>
+<text x="24" y="1630" xml:space="preserve"><tspan fill="#86efac">Готово: Stolas Core запущен</tspan></text>
+<text x="24" y="1650" xml:space="preserve"><tspan fill="#e5e7eb">API: http://127.0.0.1:8080</tspan></text>
+<text x="24" y="1670" xml:space="preserve"><tspan fill="#e5e7eb">Токен API сохранён в .env; история — в Docker volume.</tspan></text>
+<text x="24" y="1690" xml:space="preserve"><tspan fill="#e5e7eb">Результаты: docker compose exec stolas python3 -m agent history</tspan></text>
+<text x="24" y="1710" xml:space="preserve"><tspan fill="#e5e7eb">Логи: docker compose logs --tail 50 stolas</tspan></text>
+</g></svg>

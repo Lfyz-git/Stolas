@@ -12,6 +12,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 PRIVATE = {".env", "config/local.json", "n8n/local.json", "n8n/install-state.json", "n8n/settings.json"}
 
 
@@ -206,8 +207,17 @@ def deploy(source, target, ref="checkout", digest="", action=None, configure_onl
         already = installed(target)
         configured = (target / ".env").is_file() and (target / "config/local.json").is_file()
         if already and source != target and action is None:
-            print("Stolas уже установлен. reconfigure — повторная настройка; update — безопасное обновление; rollback — откат; cancel — выход.")
-            action = input("Действие [reconfigure]: ").strip() or "reconfigure"
+            from tools.terminal import ui
+            ui().stage("Stolas уже установлен")
+            choices = ("reconfigure", "update", "rollback", "cancel")
+            for i, label in enumerate(("Изменить настройки", "Обновить", "Откатить обновление", "Отменить"), 1):
+                ui().line(f"  {i}. {label}")
+            while action not in choices:
+                ui().line()
+                value = input(ui().style("Выбор [1]: ", "prompt")).strip() or "1"
+                action = choices[int(value) - 1] if value in ("1", "2", "3", "4") else "cancel" if value == ":cancel" else value
+                if action not in choices:
+                    ui().result("введите номер от 1 до 4", "error")
         action = action or "reconfigure"
         if action not in ("reconfigure", "update", "rollback", "cancel"):
             raise ValueError("Неизвестное действие установки")

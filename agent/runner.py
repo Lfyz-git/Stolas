@@ -4,6 +4,7 @@ import time
 import uuid
 
 from . import probes
+from .events import emit
 from .config import GROUPS
 from .storage import Busy
 
@@ -59,6 +60,8 @@ class Runner:
                       "download": None, "upload": None, "valid": False, "errors": [],
                       "route_checks": [], "low_directions": []}
             result["attempts"].append(sample)
+            if attempt:
+                emit("measurement_retry", "WARNING", test_id=result["id"], server=server["id"], attempt=attempt + 1)
             attempt_start = time.monotonic()
             try:
                 for direction, reverse in (("download", True), ("upload", False)):
@@ -70,6 +73,8 @@ class Runner:
                 return sample
             except probes.ProbeError as e:
                 sample["errors"].append(e.kind)
+                event = "wan_check_failed" if e.kind.startswith("route_") else "server_busy" if e.kind == "server_busy" else "server_error"
+                emit(event, "ERROR" if event == "wan_check_failed" else "WARNING", test_id=result["id"], server=server["id"], reason=e.kind)
                 if e.kind.startswith("route_"):
                     result["status"] = "route_blocked"
                     raise
@@ -109,6 +114,7 @@ class Runner:
                   "parallel": cfg["parallel"], "seconds": cfg["seconds"],
                   "server_selection": {name: cfg["server_groups"][name]["selection"] for name in GROUPS}}}
         samples = []
+        emit("measurement_started", "DEBUG", test_id=result["id"])
         reserve = (self.store.sequence() + 1) % cfg["reserve_every"] == 0
         try:
             for group in GROUPS:
@@ -121,6 +127,7 @@ class Runner:
                     try:
                         address = probes.resolve(server["host"], min(5, self._remaining(deadline)))
                     except probes.ProbeError as e:
+                        emit("server_unavailable", "WARNING", test_id=result["id"], server=server["id"], reason=e.kind)
                         result["errors"].append({"server": server["id"], "group": group, "reason": e.kind})
                         if e.kind == "cycle_timeout":
                             raise
@@ -153,7 +160,19 @@ class Runner:
                 else:
                     result["status"] = "server_disagreement"
         result["duration_seconds"] = round(time.monotonic() - start, 3)
-        self.store.save(result, cfg["history_limit"])
+        try:
+            self.store.save(result, cfg["history_limit"])
+        except Exception:
+            emit("history_error", "ERROR", test_id=result["id"], operation="save")
+            raise
+        primary = result["primary"]
+        emit("measurement_completed", test_id=result["id"], status=result["status"],
+             duration_ms=round(result["duration_seconds"] * 1000),
+             server=primary["server"] if primary else None,
+             download_mbps=primary["download"]["mbps"] if primary else None,
+             upload_mbps=primary["upload"]["mbps"] if primary else None)
+        if result["status"] == "low_confirmed":
+            emit("speed_degradation_confirmed", "WARNING", test_id=result["id"], status=result["status"])
         return result
 
     @staticmethod

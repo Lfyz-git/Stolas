@@ -33,7 +33,7 @@ if os.environ.get("STOLAS_TEST_DOWNLOAD_FAIL"):
 destination = sys.argv[sys.argv.index("--output") + 1]
 if sys.argv[-1].endswith("/SHA256SUMS"):
     digest = os.environ.get("STOLAS_TEST_BAD_HASH") or hashlib.sha256(pathlib.Path(os.environ["STOLAS_TEST_ARCHIVE"]).read_bytes()).hexdigest()
-    pathlib.Path(destination).write_text(digest + "  stolas-v0.3.0.tar.gz\\n")
+    pathlib.Path(destination).write_text(digest + "  stolas-v0.4.0.tar.gz\\n")
 else:
     shutil.copyfile(os.environ["STOLAS_TEST_ARCHIVE"], destination)
 ''')
@@ -50,6 +50,7 @@ else:
             "install.sh": b'#!/bin/sh\ncd "$(dirname "$0")"\nexec python3 tools/deploy.py "$@"\n',
             "tools/deploy.py": (ROOT / "tools/deploy.py").read_bytes(),
             "tools/environment.py": (ROOT / "tools/environment.py").read_bytes(),
+            "tools/terminal.py": (ROOT / "tools/terminal.py").read_bytes(),
             "tools/install.py": b'''import pathlib, sys, os
 if '--diagnose' in sys.argv:
     print('read-only diagnostics')
@@ -72,7 +73,7 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
             "config/example.json": b"{}\n",
         }
         if real:
-            for name in ("install.sh", "tools/install.py", "tools/deploy.py", "tools/environment.py", "n8n/stolas.json", "compose.yaml", "config/example.json"):
+            for name in ("install.sh", "tools/install.py", "tools/deploy.py", "tools/environment.py", "tools/terminal.py", "n8n/stolas.json", "compose.yaml", "config/example.json"):
                 files[name] = (ROOT / name).read_bytes()
             for path in (ROOT / "agent").glob("*.py"):
                 files[path.relative_to(ROOT).as_posix()] = path.read_bytes()
@@ -138,12 +139,12 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
         self.assert_no_staging()
 
     def test_directory_prompt_ref_and_wizard_arguments(self):
-        code, output = self.pipeline(["--ref", "v0.3.0", "--configure-only"], str(self.target) + "\nanswer\n")
+        code, output = self.pipeline(["--ref", "v0.4.0", "--configure-only"], str(self.target) + "\nanswer\n")
         self.assertEqual(code, 0, output)
         self.assertEqual((self.target / "wizard-answer").read_text(), "answer")
         self.assertIn("--configure-only", (self.target / "wizard-args").read_text())
         call = json.loads((self.root / "curl.json").read_text())
-        self.assertEqual(call[-1], "https://github.com/Lfyz-git/Stolas/releases/download/v0.3.0/stolas-v0.3.0.tar.gz")
+        self.assertEqual(call[-1], "https://github.com/Lfyz-git/Stolas/releases/download/v0.4.0/stolas-v0.4.0.tar.gz")
 
     def test_existing_installation_is_not_overwritten(self):
         self.target.mkdir()
@@ -203,7 +204,7 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
             self.assertFalse((self.target / ".env").exists())
             self.assertFalse((self.target / "config/local.json").exists())
             self.assertEqual(list(self.target.rglob("*.pyc")), [])
-        code, output = self.pipeline(["--dir", str(self.target), "--configure-only"], "off\nlater\napply\n")
+        code, output = self.pipeline(["--dir", str(self.target), "--configure-only"], "off\napply\n")
         self.assertEqual(code, 0, output)
         self.assertEqual(json.loads((self.target / "config/local.json").read_text())["route"]["mode"], "off")
         self.assertFalse((self.target / ".stolas-draft.json").exists())

@@ -17,7 +17,7 @@ from agent.storage import Store
 ROOT = Path(__file__).resolve().parents[1]
 HAS_TOOLS = (ROOT / "tools/deploy.py").exists()
 if HAS_TOOLS:
-    from tools import deploy, install
+    from tools import deploy, install, integrate
 
 
 def metric(value=900):
@@ -250,10 +250,10 @@ class TopologyAuditTests(unittest.TestCase):
     def test_topology_endpoint_rules(self):
         accepted = {"native": "http://127.0.0.1:8080", "docker": "http://172.20.0.1:8080", "lan": "https://stolas.example.test", "vpn": "http://10.8.0.1:8080", "proxy": "https://stolas.example.test"}
         for topology, endpoint in accepted.items():
-            self.assertEqual(install.connection_url(endpoint, topology), endpoint)
+            self.assertEqual(integrate.connection_url(endpoint, topology), endpoint)
         for topology, endpoint in (("docker", "http://127.0.0.1:8080"), ("lan", "http://192.168.1.2:8080"), ("vpn", "http://8.8.8.8:8080"), ("proxy", "http://example.test")):
             with self.assertRaises(ValueError):
-                install.connection_url(endpoint, topology)
+                integrate.connection_url(endpoint, topology)
 
     def test_each_topology_can_be_collected_without_public_bind(self):
         for topology in ("native", "docker", "lan", "vpn", "proxy"):
@@ -266,7 +266,7 @@ class TopologyAuditTests(unittest.TestCase):
                      "n8n": [{"name": "automation", "id": "container-id", "image": "n8nio/n8n:2", "mode": "default", "confidence": "image", "networks": {"default": {"Gateway": "172.20.0.1", "NetworkID": "net"}}}],
                      "networks": {"net": {"driver": "bridge", "ipam": [{"Gateway": "172.20.0.1"}]}}}
             with patch("builtins.input", side_effect=answers), patch.object(install.environment, "port_state", return_value="free"):
-                options = install.collect_topology(api, facts)
+                options = integrate.collect_topology(api, facts)
             self.assertEqual(options["topology"], topology)
             self.assertNotEqual(api["STOLAS_LISTEN"], "0.0.0.0")
 
@@ -274,7 +274,7 @@ class TopologyAuditTests(unittest.TestCase):
         api = {"STOLAS_API_TOKEN": "secret"}
         options = {"topology": "docker", "docker_container": "n8n", "endpoint": "http://172.20.0.1:8080"}
         with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
-            install.check_connection(ROOT, options, api, ["docker", "compose"])
+            integrate.check_connection(ROOT, options, api, ["docker", "compose"])
         args = run.call_args.args[0]
         self.assertEqual(args[:5], ["docker", "exec", "-i", "n8n", "node"])
         self.assertNotIn("secret", " ".join(args))
@@ -283,7 +283,7 @@ class TopologyAuditTests(unittest.TestCase):
     def test_notification_modes_configure_the_right_branches(self):
         for mode in ("alerts_only", "every_measurement", "daily_summary"):
             options = dict(endpoint="http://127.0.0.1:8080", chat_id="123", hours=3, timezone="Etc/UTC", notification_mode=mode, summary_hour=7)
-            workflow = install.workflow(ROOT, options)
+            workflow = integrate.workflow(ROOT, options)
             nodes = {n["name"]: n for n in workflow["nodes"]}
             self.assertIn(mode, nodes["Settings"]["parameters"]["jsCode"])
             self.assertEqual(nodes["Daily summary"]["disabled"], mode != "daily_summary")

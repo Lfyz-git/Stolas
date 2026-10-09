@@ -2,7 +2,7 @@ name: ${STOLAS_PROJECT_NAME:-stolas}
 services:
   stolas:
     build: .
-    image: ${STOLAS_PROJECT_NAME:-stolas}:0.3.0
+    image: ${STOLAS_PROJECT_NAME:-stolas}:0.4.0
     restart: unless-stopped
     # Linux only: route checks must see the host's routes, not a bridge gateway.
     network_mode: host
@@ -12,6 +12,10 @@ services:
       STOLAS_PORT: ${STOLAS_PORT:-8080}
       STOLAS_CONFIG: /app/config/local.json
       STOLAS_DATA_DIR: /data
+      STOLAS_LOG_LEVEL: ${STOLAS_LOG_LEVEL:-INFO}
+      STOLAS_LOG_FORMAT: ${STOLAS_LOG_FORMAT:-json}
+    labels:
+      org.stolas.service: core
     volumes:
       - ./config/local.json:/app/config/local.json:ro
       - stolas-data:/data
