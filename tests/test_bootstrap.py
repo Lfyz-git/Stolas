@@ -217,6 +217,15 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
         self.assertIn("интерактивный терминал", result.stderr)
         self.assertFalse(self.target.exists())
 
+    def test_truncated_bootstrap_body_never_starts_installation(self):
+        script = BOOTSTRAP.read_text(encoding="utf-8")
+        script = script[:script.index("    # Validate the GitHub archive")]
+        result = subprocess.run(["sh", "-s", "--", "--dir", str(self.target)], input=script,
+                                cwd=self.root, env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.target.exists())
+        self.assertFalse((self.root / "curl.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

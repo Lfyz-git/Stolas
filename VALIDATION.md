@@ -17,6 +17,11 @@ Pre-deployment audit update (2026-10-09):
   execution and Telegram delivery still require deployment-environment checks.
 - Azazel was not accessed or deployed. Source release v0.2.0 uses a release
   archive and SHA256SUMS; bootstrap checks integrity before extraction/execution.
+- GitHub Actions run 37928662174 passed: 94 Linux tests (one iperf3 skip on
+  the runner), all three workflows successfully imported by n8n 2.42.6,
+  production Docker build and 94 image tests (41 installer-only skips;
+  real iperf3 loopback passed), followed by Compose validation.
+  https://github.com/Lfyz-git/Stolas/actions/runs/37928662174
 
 Earlier validation records follow for provenance.
 

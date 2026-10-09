@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.2.0/bootstrap.sh
 wget -qO- https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.2.0/bootstrap.sh | sh
 ```
 
-Каталог можно передать сразу, вместе с режимом подготовки настроек:
+Каталог можно передать сразу:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.2.0/bootstrap.sh | sh -s -- --dir /opt/stolas
