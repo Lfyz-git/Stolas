@@ -102,7 +102,7 @@ class DiscoveryTests(unittest.TestCase):
         self.container["project"] = "n8n"
         for name, image in (("n8n-db", "postgres:17"), ("n8n-redis", "redis:7"), ("proxy", "traefik:3")):
             companion = copy.deepcopy(self.container)
-            companion.update(id=name, name=name, service=name, image=image, command=[])
+            companion.update(id=name, name=name, service=name, image=image, command=["redis-server", "--requirepass", "n8n"] if "redis" in name else [])
             self.containers.append(companion)
         self.assertEqual([c["name"] for c in self.discover()["n8n"]], ["automation-app"])
 

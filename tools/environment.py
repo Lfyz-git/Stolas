@@ -129,7 +129,7 @@ def discover(root):
             if "worker" in cmd or "webhook" in cmd or "task-runners" in image or re.search(r"(?:^|[ _-])(worker|webhook|runner)(?:$|[ _-])", hints):
                 continue
             infrastructure = image_name in ("postgres", "redis", "valkey", "mysql", "mariadb", "nginx", "traefik", "caddy", "rabbitmq")
-            explicit_command = any(Path(part).name == "n8n" for part in cmd if isinstance(part, str))
+            explicit_command = bool(cmd and isinstance(cmd[0], str) and Path(cmd[0]).name == "n8n")
             if official or explicit_command or (not infrastructure and re.search(r"(?:^|[ _-])n8n(?:$|[ _-])", hints)):
                 container["confidence"] = "image" if official else "metadata"
                 facts["n8n"].append(container)
