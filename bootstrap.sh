@@ -125,7 +125,7 @@ EOF
     mkdir "$workdir/unpacked"
     tar -xzf "$archive" -C "$workdir/unpacked" --no-same-owner --no-same-permissions
     source="$workdir/unpacked/$prefix"
-    for file in install.sh tools/install.py tools/deploy.py agent/config.py compose.yaml config/example.json; do
+    for file in install.sh tools/install.py tools/deploy.py tools/environment.py agent/config.py compose.yaml config/example.json; do
         [ -f "$source/$file" ] && [ ! -L "$source/$file" ] || fail "В архиве отсутствует $file."
     done
     printf 'Запуск интерактивного мастера…\n'

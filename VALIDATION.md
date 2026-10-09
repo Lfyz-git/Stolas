@@ -2,7 +2,7 @@
 
 Installer UX revision v0.3.0 (2026-10-09):
 
-- Full local Windows/Python 3.11 suite: 123 scenarios, 104 passed and 19 explicit
+- Full local Windows/Python 3.11 suite: 126 scenarios, 106 passed and 20 explicit
   Linux/real-Docker/iperf3 skips. Shell syntax and example configuration checked.
 - Added read-only Docker discovery tests for image/Compose identity, worker
   exclusion, multiple instances/networks, missing/remote/inaccessible Docker,
@@ -19,6 +19,13 @@ Installer UX revision v0.3.0 (2026-10-09):
 - Measurement agent code is unchanged. No access to Azazel, no public iperf load.
 - Live deployment routing, reverse proxy and Telegram delivery remain checks for
   the deployment environment.
+- First full Linux CI passed at:
+  https://github.com/Lfyz-git/Stolas/actions/runs/37939438412
+  including real two-network Docker discovery/authentication, n8n 2.x import,
+  production Docker build, loopback iperf3 and Compose.
+- Added further regression checks for companion PostgreSQL/Redis containers,
+  repeated n8n failures after a completed first test, and the actual curl|sh
+  wizard cancellation/retry without removing the destination.
 
 Pre-deployment audit update (2026-10-09):
 

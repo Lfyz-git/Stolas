@@ -45,10 +45,11 @@ else:
         self.env["TMPDIR"] = str(self.root)
         self.make_archive()
 
-    def make_archive(self, extra=None):
+    def make_archive(self, extra=None, real=False):
         files = {
             "install.sh": b'#!/bin/sh\ncd "$(dirname "$0")"\nexec python3 tools/deploy.py "$@"\n',
             "tools/deploy.py": (ROOT / "tools/deploy.py").read_bytes(),
+            "tools/environment.py": (ROOT / "tools/environment.py").read_bytes(),
             "tools/install.py": b'''import pathlib, sys, os
 if '--diagnose' in sys.argv:
     print('read-only diagnostics')
@@ -70,6 +71,11 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
             "compose.yaml": b"services: {}\n",
             "config/example.json": b"{}\n",
         }
+        if real:
+            for name in ("install.sh", "tools/install.py", "tools/deploy.py", "tools/environment.py", "n8n/stolas.json", "compose.yaml", "config/example.json"):
+                files[name] = (ROOT / name).read_bytes()
+            for path in (ROOT / "agent").glob("*.py"):
+                files[path.relative_to(ROOT).as_posix()] = path.read_bytes()
         with tarfile.open(self.archive, "w:gz") as archive:
             for name, content in files.items():
                 member = tarfile.TarInfo("Stolas-test/" + name)
@@ -188,6 +194,19 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
         self.assertEqual(code, 0, output)
         self.assertEqual((self.target / "wizard-answer").read_text(), "hello")
         self.assert_no_staging()
+
+    def test_real_wizard_cancel_then_retry_without_removing_target(self):
+        self.make_archive(real=True)
+        for attempt in range(2):
+            code, output = self.pipeline(answers=":cancel\n")
+            self.assertEqual(code, 3, output)
+            self.assertFalse((self.target / ".env").exists())
+            self.assertFalse((self.target / "config/local.json").exists())
+            self.assertEqual(list(self.target.rglob("*.pyc")), [])
+        code, output = self.pipeline(["--dir", str(self.target), "--configure-only"], "off\nlater\napply\n")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(json.loads((self.target / "config/local.json").read_text())["route"]["mode"], "off")
+        self.assertFalse((self.target / ".stolas-draft.json").exists())
 
     def test_installed_directory_offers_reconfigure_and_update(self):
         self.assertEqual(self.pipeline()[0], 0)

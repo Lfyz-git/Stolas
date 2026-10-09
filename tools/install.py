@@ -1,4 +1,7 @@
 """Interactive Linux installer. Only the standard library is required on the host."""
+import sys
+if __name__ == "__main__":
+    sys.dont_write_bytecode = True
 import argparse
 from contextlib import contextmanager
 import copy
@@ -14,7 +17,6 @@ import re
 import secrets
 import shutil
 import subprocess
-import sys
 import tempfile
 import urllib.error
 import urllib.parse
@@ -58,10 +60,12 @@ def ask(label, default="", convert=str, secret=False):
 
 def choice(label, values, default):
     def parse(value):
+        if value.isdigit() and 1 <= int(value) <= len(values):
+            return values[int(value) - 1]
         if value.lower() not in values:
             raise ValueError("выберите " + ", ".join(values))
         return value.lower()
-    return ask(label + " (" + "/".join(values) + ")", default, parse)
+    return ask(label + " (" + "/".join(f"{i + 1}={v}" for i, v in enumerate(values)) + ")", default, parse)
 
 
 def integer(low, high=None):
@@ -342,7 +346,7 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
     facts = facts if facts is not None else environment.discover(root)
     previous = previous or {}
     print("docker — обнаруженный n8n на этом хосте; native — n8n в ОС; lan/proxy — удалённый HTTPS; vpn — доверенный VPN.")
-    default = previous.get("topology", "docker" if facts["n8n"] else "native")
+    default = previous.get("topology", "docker" if facts["n8n"] else "")
     topology = choice("Где работает n8n", ("docker", "native", "lan", "vpn", "proxy"), default)
     options = {"topology": topology}
     if topology == "docker":
@@ -474,7 +478,7 @@ def print_facts(facts):
     print("\nОбнаружение окружения (только чтение)")
     print("Каталог:", facts["installation"]["directory"])
     print("Docker:", facts["docker"].get("version") or facts["docker"]["reason"])
-    print("n8n:", ", ".join(c["name"] + " (" + c["image"] + ")" for c in facts["n8n"]) or "запущенные экземпляры не найдены")
+    print("n8n в Docker:", ", ".join(c["name"] + " (" + c["image"] + ")" for c in facts["n8n"]) or "запущенные экземпляры не найдены")
     state = facts["installation"]
     print("Stolas:", "сохранённые настройки" if state["config"] else "новая/незавершённая настройка", "; версия:", state.get("ref", "checkout/неизвестна"), "; этап:", state.get("stage", "нет"))
     if state.get("wizard_stage"):
@@ -793,9 +797,14 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
     progress_path = root / ".stolas-progress.json"
     previous_progress = json.loads(progress_path.read_text()) if progress_path.exists() else {}
     fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()
+    first_status = previous_progress.get("first_status")
+    measured = (previous_progress.get("config_sha256") == fingerprint and first_status is not None
+                and previous_progress.get("stage") != "complete"
+                and (previous_progress.get("stage") == "measured" or previous_progress.get("measurement_done")))
     def checkpoint(stage, **extra):
         save_draft(root, plan)
-        write_private(progress_path, json.dumps({"stage": stage, "config_sha256": fingerprint, **extra}) + "\n")
+        write_private(progress_path, json.dumps({"stage": stage, "config_sha256": fingerprint,
+                      "measurement_done": bool(measured), "first_status": first_status, **extra}) + "\n")
     # Validate before touching existing configuration or installing anything.
     with tempfile.TemporaryDirectory() as directory:
         check_path = Path(directory) / "config.json"
@@ -833,11 +842,13 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
         request_json(f"http://{host}:{api['STOLAS_PORT']}", "/healthz", api["STOLAS_API_TOKEN"])
         result = None
         print("Сервис обновлён; конфигурация, история и n8n сохранены. Дополнительный нагрузочный тест не запускался.")
-    elif previous_progress.get("config_sha256") == fingerprint and previous_progress.get("stage") == "measured":
-        result = {"status": previous_progress["first_status"]}
+    elif measured:
+        result = {"status": first_status}
         print("Первичный CLI-цикл уже завершён до прерывания; повторный нагрузочный тест не запускается.")
     else:
         result = first_test(compose, root)
+    if result:
+        first_status, measured = result["status"], True
     checkpoint("measured", first_status=result["status"] if result else None)
     if generated:
         connect_n8n(root, options, api, generated)

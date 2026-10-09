@@ -1,6 +1,7 @@
 """Installer orchestration tests; never install packages or contact public services."""
 import contextlib
 import copy
+import hashlib
 import io
 import json
 import os
@@ -171,6 +172,22 @@ elif "exec" in sys.argv:
         health.assert_called_once()
         for name, value in before.items():
             self.assertEqual((self.root / name).read_bytes(), value)
+
+    def test_repeated_n8n_failure_preserves_completed_first_measurement(self):
+        self.install(configure_only=True)
+        progress = self.root / ".stolas-progress.json"
+        progress.write_text(json.dumps({"config_sha256": hashlib.sha256(json.dumps(self.cfg, sort_keys=True).encode()).hexdigest(),
+                                       "stage": "measured", "first_status": "ok", "measurement_done": True}))
+        options = dict(mode="export", topology="native", endpoint="http://127.0.0.1:8080", chat_id="123", hours=3, timezone="Etc/UTC", notification_mode="alerts_only")
+        plan = dict(config=self.cfg, api=self.api, n8n=options, completed=["wan", "n8n"])
+        facts = {"hostname": "test", "installation": {"directory": str(self.root), "config": True}, "docker": {"available": True, "version": "test"}, "n8n": [], "warnings": []}
+        with patch.object(installer, "collect_plan", return_value=plan), patch.object(installer.environment, "discover", return_value=facts), patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), patch.object(installer, "first_test") as heavy, patch.object(installer, "connect_n8n"):
+            with patch.object(installer, "check_connection", side_effect=RuntimeError("unreachable")), self.assertRaises(RuntimeError):
+                installer.install(self.root)
+            self.assertTrue(json.loads(progress.read_text())["measurement_done"])
+            with patch.object(installer, "check_connection"):
+                self.assertEqual(installer.install(self.root), 0)
+        heavy.assert_not_called()
 
     def test_atomic_backups_are_private_and_symlinks_are_rejected(self):
         path = self.root / ".env"

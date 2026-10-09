@@ -98,6 +98,14 @@ class DiscoveryTests(unittest.TestCase):
         self.containers.append(worker)
         self.assertEqual(len(self.discover()["n8n"]), 1)
 
+    def test_n8n_compose_project_does_not_turn_database_into_n8n(self):
+        self.container["project"] = "n8n"
+        for name, image in (("n8n-db", "postgres:17"), ("n8n-redis", "redis:7"), ("proxy", "traefik:3")):
+            companion = copy.deepcopy(self.container)
+            companion.update(id=name, name=name, service=name, image=image, command=[])
+            self.containers.append(companion)
+        self.assertEqual([c["name"] for c in self.discover()["n8n"]], ["automation-app"])
+
     def test_multiple_instances_offer_named_choices(self):
         second = copy.deepcopy(self.container)
         second.update(id="second", name="other-editor", project="other-project")

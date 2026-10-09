@@ -1,6 +1,7 @@
 #!/bin/sh
 # Run from a checkout: sh install.sh
 set -eu
+export PYTHONDONTWRITEBYTECODE=1
 cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 if [ "$(uname -s)" != Linux ]; then
     echo 'Stolas устанавливается на Linux-хосте.' >&2

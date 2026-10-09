@@ -123,11 +123,14 @@ def discover(root):
             if container.get("service") == "stolas" and container.get("directory") and Path(container["directory"]).resolve() == root.resolve():
                 facts["stolas"].append(container)
             image = container.get("image", "").split("@")[0]
-            hints = " ".join(str(container.get(k) or "") for k in ("name", "service", "project")).lower()
-            official = image.rsplit("/", 1)[-1].split(":")[0] == "n8n"
+            hints = " ".join(str(container.get(k) or "") for k in ("name", "service")).lower()
+            image_name = image.rsplit("/", 1)[-1].split(":")[0]
+            official = image_name == "n8n"
             if "worker" in cmd or "webhook" in cmd or "task-runners" in image or re.search(r"(?:^|[ _-])(worker|webhook|runner)(?:$|[ _-])", hints):
                 continue
-            if official or re.search(r"(?:^|[ _-])n8n(?:$|[ _-])", hints):
+            infrastructure = image_name in ("postgres", "redis", "valkey", "mysql", "mariadb", "nginx", "traefik", "caddy", "rabbitmq")
+            explicit_command = any(Path(part).name == "n8n" for part in cmd if isinstance(part, str))
+            if official or explicit_command or (not infrastructure and re.search(r"(?:^|[ _-])n8n(?:$|[ _-])", hints)):
                 container["confidence"] = "image" if official else "metadata"
                 facts["n8n"].append(container)
                 for network in (container.get("networks") or {}).values():
