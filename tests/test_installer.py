@@ -135,7 +135,7 @@ with pathlib.Path("calls.jsonl").open("a") as file:
 if "context" in sys.argv:
     print("unix:///var/run/docker.sock")
 elif "info" in sys.argv and "--format" in sys.argv:
-    print("x86_64")
+    print("x86_64" if sys.argv[-1] == "{{.Architecture}}" else "linux x86_64 fixture")
 elif "exec" in sys.argv:
     print(json.dumps({"status": "ok", "primary": None, "confirmation": None}))
 ''')
