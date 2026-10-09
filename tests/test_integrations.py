@@ -99,12 +99,23 @@ class IntegrationTests(unittest.TestCase):
         with patch.object(integrate, "request_json", return_value=pages[0]), self.assertRaises(ValueError):
             integrate.list_credentials(self.options)
 
+    def test_flat_public_api_projects_are_used_for_workflow_binding(self):
+        for item in self.items:
+            item["shared"] = [dict(id="p1", name="Personal project", role="credential:owner")]
+        self.assertTrue(self.connect())
+        payload = next(body for path, body in self.calls if path == "/workflows")
+        self.assertEqual(payload["projectId"], "p1")
+        self.assertIn("Personal project", self.output.getvalue())
+
     def test_project_mismatch_or_unknown_sharing_does_not_post(self):
         self.items[1] = self.credential("api", "httpHeaderAuth", "p2")
         self.assertFalse(self.connect(()))
         self.assertFalse(any(b for p, b in self.calls))
+        self.items[1].pop("shared")
+        self.assertFalse(self.connect(()))
+        self.assertFalse(any(b for p, b in self.calls))
         for item in self.items:
-            item.pop("shared")
+            item.pop("shared", None)
         self.assertFalse(self.connect(()))
 
     def test_only_stolas_header_credential_can_be_created_with_explicit_choice(self):

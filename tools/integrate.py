@@ -101,9 +101,10 @@ def list_credentials(options):
             projects = []
             for shared in item.get("shared", []):
                 project = shared.get("project", {})
-                identifier = shared.get("projectId") or project.get("id")
+                # Public API versions return either a relation or a flat project.
+                identifier = shared.get("projectId") or project.get("id") or shared.get("id")
                 if identifier:
-                    projects.append({"id": str(identifier), "name": project.get("name", str(identifier))})
+                    projects.append({"id": str(identifier), "name": project.get("name") or shared.get("name") or str(identifier)})
             items.append({"id": str(item["id"]), "name": str(item.get("name", item["id"])),
                           "type": item["type"], "projects": projects})
         cursor = page.get("nextCursor")
@@ -212,7 +213,7 @@ def connect_n8n(root, options, api, data):
         if choice("Создать в n8n credential для доступа к Stolas?", ("create", "export"), "export") != "create":
             return False
     projects = {p["id"]: p for p in telegram["projects"]}
-    if header and header.get("projects"):
+    if header:
         header_projects = {p["id"] for p in header["projects"]}
         projects = {k: v for k, v in projects.items() if k in header_projects}
         if telegram["projects"] and not projects:
