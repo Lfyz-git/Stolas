@@ -6,6 +6,7 @@
   "process_timeout": 25,
   "cycle_timeout": 240,
   "attempts_per_server": 2,
+  "busy_attempts_per_server": 9,
   "retry_delay": 2,
   "reserve_every": 8,
   "min_interval": 300,
@@ -13,7 +14,14 @@
   "bind_address": null,
   "route": {
     "mode": "required",
-    "public_ip_url": "https://api.ipify.org",
+    "public_ip_urls": [
+      "https://api.ipify.org",
+      "https://ipv4.icanhazip.com",
+      "https://checkip.amazonaws.com"
+    ],
+    "verification_timeout": 12,
+    "source_timeout": 3,
+    "min_confirmations": 1,
     "expected_public_cidrs": [],
     "interface": null,
     "gateway": null
@@ -22,19 +30,51 @@
     "primary": {
       "selection": "sequential",
       "servers": [
-        {"id": "hostkey-msk", "host": "spd-rudp.hostkey.ru", "ports": [5201,5202,5203,5204,5205,5206,5207,5208,5209], "min_download_mbps": 500, "min_upload_mbps": 500}
+        {
+          "id": "hostkey-msk",
+          "host": "spd-rudp.hostkey.ru",
+          "ports": [
+            5201,
+            5202,
+            5203,
+            5204,
+            5205,
+            5206,
+            5207,
+            5208,
+            5209
+          ],
+          "min_download_mbps": 500,
+          "min_upload_mbps": 500
+        }
       ]
     },
     "additional": {
       "selection": "sequential",
       "servers": [
-        {"id": "mts-msk", "host": "mskst.st.mtsws.net", "ports": [3333], "min_download_mbps": 500, "min_upload_mbps": 500}
+        {
+          "id": "mts-msk",
+          "host": "mskst.st.mtsws.net",
+          "ports": [
+            3333
+          ],
+          "min_download_mbps": 500,
+          "min_upload_mbps": 500
+        }
       ]
     },
     "emergency": {
       "selection": "sequential",
       "servers": [
-        {"id": "ruweb-msk", "host": "msk.speed.ruweb.net", "ports": [5201], "min_download_mbps": 500, "min_upload_mbps": 300}
+        {
+          "id": "ruweb-msk",
+          "host": "msk.speed.ruweb.net",
+          "ports": [
+            5201
+          ],
+          "min_download_mbps": 500,
+          "min_upload_mbps": 300
+        }
       ]
     }
   }

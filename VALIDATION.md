@@ -1,5 +1,25 @@
 # Validation record
 
+Pre-deployment audit update (2026-10-09):
+
+- Windows / Python 3.11: full unittest suite passes; Linux-only bootstrap,
+  POSIX permissions/lock and real iperf3 cases are explicitly skipped locally.
+- Added regression coverage for empty/foreign directories, update and rollback,
+  interrupted transactions, concurrent installation, topology validation,
+  bounded WAN witnesses including stalled DNS, busy-port budgets, authenticated
+  history summaries and all notification policies.
+- Shell syntax and example configuration validated locally; diff whitespace checked.
+- CI runs the entire Linux suite, embedded JavaScript, production Docker build,
+  real loopback iperf3 in the nonroot production image, Compose validation and
+  imports all three workflow policies in pinned n8n 2.42.6 (network disabled).
+- Public iperf servers are never used by tests. A live fresh-host apt install,
+  routing/firewall on the deployment host, live remote n8n execution, arm64
+  execution and Telegram delivery still require deployment-environment checks.
+- Azazel was not accessed or deployed. Source release v0.2.0 uses a release
+  archive and SHA256SUMS; bootstrap checks integrity before extraction/execution.
+
+Earlier validation records follow for provenance.
+
 Local validation: 2026-10-09, Windows, Python 3.12.14.
 
 - Unit / HTTP integration / CLI subprocess / artifact checks: 25 passed.

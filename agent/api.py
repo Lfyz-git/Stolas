@@ -82,6 +82,8 @@ def make_server(runner, address, token):
                 self.reply(200 if result else 404, result or {"error": "no_results"})
             elif self.path == "/v1/results":
                 self.reply(200, {"results": runner.store.history()})
+            elif self.path == "/v1/summary/daily":
+                self.reply(200, runner.store.daily_summary())
             else:
                 self.reply(404, {"error": "not_found"})
 

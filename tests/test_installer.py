@@ -48,7 +48,7 @@ class InstallerTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args, cli_code, json.dumps({"status": cli_status, "primary": None, "confirmation": None}), "")
             return subprocess.CompletedProcess(args, 0, "", "")
 
-        with patch.object(installer, "collect_config", return_value=self.cfg), patch.object(installer, "collect_api", return_value=self.api), patch.object(installer, "collect_n8n", return_value=options or {"mode": "later"}), patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "run", side_effect=command):
+        with patch.object(installer, "collect_config", return_value=self.cfg), patch.object(installer, "collect_api", return_value=self.api), patch.object(installer, "collect_n8n", return_value=options or {"mode": "later"}), patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "check_connection"), patch.object(installer, "run", side_effect=command):
             return installer.install(self.root, configure_only=configure_only)
 
     def test_later_starts_service_and_runs_exactly_one_cli_cycle(self):
@@ -85,7 +85,7 @@ class InstallerTests(unittest.TestCase):
     def test_defaults_are_all_prompted_and_route_must_be_explicit(self):
         # 1 node + 10 numeric + bind + guard + URL + CIDRs + interface/gateway
         # + selection, count and five fields in each of the three groups.
-        answers = [""] * 12 + ["", "", "192.0.2.1/32", "", ""] + [""] * 21
+        answers = [""] * 13 + ["", "", "", "", "", "192.0.2.1/32", "", ""] + [""] * 21
         with patch("builtins.input", side_effect=answers) as prompt:
             actual = installer.collect_config(copy.deepcopy(installer.DEFAULT))
         self.assertEqual(prompt.call_count, len(answers))
@@ -122,6 +122,7 @@ class InstallerTests(unittest.TestCase):
         shutil.copytree(ROOT / "agent", self.root / "agent")
         (self.root / "tools").mkdir()
         shutil.copy2(ROOT / "tools/install.py", self.root / "tools/install.py")
+        shutil.copy2(ROOT / "tools/deploy.py", self.root / "tools/deploy.py")
         shutil.copy2(ROOT / "install.sh", self.root / "install.sh")
         shutil.copy2(ROOT / "compose.yaml", self.root / "compose.yaml")
         bindir = self.root / "bin"
@@ -132,13 +133,13 @@ with pathlib.Path("calls.jsonl").open("a") as file:
     file.write(json.dumps(sys.argv[1:]) + "\\n")
 if "context" in sys.argv:
     print("unix:///var/run/docker.sock")
-elif "--format" in sys.argv:
+elif "info" in sys.argv and "--format" in sys.argv:
     print("x86_64")
 elif "exec" in sys.argv:
     print(json.dumps({"status": "ok", "primary": None, "confirmation": None}))
 ''')
         stub.chmod(0o755)
-        answers = [""] * 12 + ["", "", "192.0.2.1/32", "", ""] + [""] * 21 + ["", "", "", "later"]
+        answers = [""] * 13 + ["", "", "", "", "", "192.0.2.1/32", "", ""] + [""] * 21 + ["", "", "", "later"]
         env = installer.clean_env()
         env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
         result = subprocess.run(["sh", "install.sh"], cwd=self.root, env=env, input="\n".join(answers) + "\n", capture_output=True, text=True, timeout=30)
@@ -155,6 +156,17 @@ elif "exec" in sys.argv:
             self.install(configure_only=True)
             self.assertEqual(installer.validated(self.root / "config/local.json")["parallel"], 4)
             self.assertEqual(os.environ["STOLAS_PARALLEL"], "0")
+
+    def test_update_keeps_files_and_does_not_run_extra_load_test(self):
+        self.install(configure_only=True)
+        before = {name: (self.root / name).read_bytes() for name in (".env", "config/local.json")}
+        with patch.object(installer, "collect_config") as wizard, patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), patch.object(installer, "first_test") as heavy, patch.object(installer, "request_json", return_value={"status": "ready"}) as health:
+            self.assertEqual(installer.install(self.root, reuse=True), 0)
+        heavy.assert_not_called()
+        wizard.assert_not_called()
+        health.assert_called_once()
+        for name, value in before.items():
+            self.assertEqual((self.root / name).read_bytes(), value)
 
     def test_atomic_backups_are_private_and_symlinks_are_rejected(self):
         path = self.root / ".env"
@@ -196,7 +208,7 @@ elif "exec" in sys.argv:
                 pass
 
             def do_GET(self):
-                self.reply({"status": "ready"})
+                self.reply({"properties": {"name": {}, "value": {}, "accessToken": {}}} if "/credentials/schema/" in self.path else {"status": "ready"})
 
             def do_POST(self):
                 payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))

@@ -6,6 +6,7 @@ import math
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 GROUPS = ("primary", "additional", "emergency")
@@ -15,9 +16,10 @@ SERVER_FIELDS = {"id", "host", "ports", "min_download_mbps", "min_upload_mbps"}
 DEFAULT = {
     "node": "stolas-node", "seconds": 10, "parallel": 4,
     "connect_timeout": 5, "process_timeout": 25, "cycle_timeout": 240,
-    "attempts_per_server": 2, "retry_delay": 2, "reserve_every": 8,
+    "attempts_per_server": 2, "busy_attempts_per_server": 9, "retry_delay": 2, "reserve_every": 8,
     "min_interval": 300, "history_limit": 10000, "bind_address": None,
-    "route": {"mode": "required", "public_ip_url": "https://api.ipify.org",
+    "route": {"mode": "required", "public_ip_urls": ["https://api.ipify.org", "https://ipv4.icanhazip.com", "https://checkip.amazonaws.com"],
+              "verification_timeout": 12, "source_timeout": 3, "min_confirmations": 1,
               "expected_public_cidrs": [], "interface": None, "gateway": None},
     "server_groups": {
         "primary": {"selection": "sequential", "servers": [
@@ -73,7 +75,7 @@ def load(path=None):
         raise ValueError("Invalid node id")
     limits = {"seconds": (1, 60), "parallel": (1, 16), "connect_timeout": (1, 30),
               "process_timeout": (5, 120), "cycle_timeout": (10, 600),
-              "attempts_per_server": (1, 9), "retry_delay": (0, 30),
+              "attempts_per_server": (1, 9), "busy_attempts_per_server": (1, 9), "retry_delay": (0, 30),
               "reserve_every": (1, 1000), "min_interval": (0, 86400),
               "history_limit": (1, 100000)}
     for key, (lo, hi) in limits.items():
@@ -112,13 +114,30 @@ def load(path=None):
             if type(s[key]) not in (int, float) or not math.isfinite(s[key]) or not 0 <= s[key] <= 1000000:
                 raise ValueError("Invalid threshold")
     r = cfg["route"]
+    if isinstance(r, dict) and "public_ip_url" in r:
+        r = dict(r)
+        if "public_ip_urls" in r:
+            raise ValueError("Use public_ip_urls or legacy public_ip_url, not both")
+        r["public_ip_urls"] = [r.pop("public_ip_url")]
     if not isinstance(r, dict) or r.keys() - DEFAULT["route"].keys():
         raise ValueError("Invalid route settings")
     cfg["route"] = r = DEFAULT["route"] | r
     if r["mode"] not in ("required", "off"):
         raise ValueError("route.mode must be required or off")
-    if not isinstance(r["public_ip_url"], str) or not r["public_ip_url"].startswith("https://"):
-        raise ValueError("Public IP probe must use HTTPS")
+    urls = r["public_ip_urls"]
+    if not isinstance(urls, list) or not urls or any(not isinstance(value, str) for value in urls) or len(set(urls)) != len(urls):
+        raise ValueError("Expected distinct public_ip_urls")
+    for value in urls:
+        if not isinstance(value, str):
+            raise ValueError("Invalid public IP URL")
+        parsed = urlsplit(value)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or any(c.isspace() for c in value):
+            raise ValueError("Public IP probes need HTTPS URLs without credentials/query")
+        if parsed.port is not None and not 1 <= parsed.port <= 65535:
+            raise ValueError("Invalid public IP probe port")
+    for key, low, high in (("verification_timeout", 2, 60), ("source_timeout", 1, 30), ("min_confirmations", 1, len(urls))):
+        if type(r[key]) is not int or not low <= r[key] <= high:
+            raise ValueError("Invalid route " + key)
     if not isinstance(r["expected_public_cidrs"], list):
         raise ValueError("Expected CIDR list")
     for cidr in r["expected_public_cidrs"]:

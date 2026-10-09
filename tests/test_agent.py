@@ -41,10 +41,10 @@ class AgentTests(unittest.TestCase):
         self.assertEqual([s["endpoint"]["port"] for s in r["attempts"]], [5201, 5202])
 
     def test_all_busy_is_unavailable(self):
-        r = self.cycle([ProbeError("server_busy")] * 6)
+        r = self.cycle([ProbeError("server_busy")] * 11)
         self.assertEqual(r["status"], "unavailable")
         self.assertFalse(r["wan_alert"])
-        self.assertEqual(len(r["attempts"]), 6)
+        self.assertEqual(len(r["attempts"]), 11)
 
     def test_low_confirmed_and_original_preserved(self):
         r = self.cycle([metric(10), metric(900), metric(20), metric(800)])
@@ -65,7 +65,7 @@ class AgentTests(unittest.TestCase):
         self.assertFalse(r["wan_alert"])
 
     def test_partial_pair_never_mixes_servers(self):
-        r = self.cycle([metric(5), ProbeError("test_timeout"), ProbeError("server_busy"), metric(900), metric(800)])
+        r = self.cycle([metric(5), ProbeError("test_timeout"), ProbeError("test_timeout"), metric(900), metric(800)])
         self.assertEqual(r["primary"]["server"], "mts-msk")
         self.assertEqual(r["attempts"][0]["download"]["mbps"], 5)
         self.assertFalse(r["attempts"][0]["valid"])
@@ -136,13 +136,10 @@ class AgentTests(unittest.TestCase):
     def test_route_egress_mismatch(self):
         self.cfg["route"]["expected_public_cidrs"] = ["192.0.2.0/24"]
         response = subprocess.CompletedProcess([], 0, '[{"dev":"eth0"}]', '')
-        with patch("agent.probes.subprocess.run", return_value=response), patch("agent.probes.urllib.request.build_opener") as opener:
-            reply = opener.return_value.open.return_value.__enter__.return_value
-            reply.geturl.return_value = "https://example.invalid"
-            reply.read.return_value = b"198.51.100.1"
+        with patch("agent.probes.subprocess.run", return_value=response), patch("agent.probes.probe_public_ip", return_value="198.51.100.1") as probe:
             with self.assertRaisesRegex(ProbeError, "route_public_ip_mismatch"):
                 _guard(self.cfg, "192.0.2.1")
-            reply.read.return_value = b"192.0.2.10"
+            probe.return_value = "192.0.2.10"
             self.assertTrue(_guard(self.cfg, "192.0.2.1")["verified"])
 
     def test_cli_real_process_fail_closed_json(self):
@@ -216,6 +213,15 @@ class HttpIntegrationTests(unittest.TestCase):
         for error, code in [(Busy(), 409), (Cooldown(), 429)]:
             with patch.object(self.runner, "run", side_effect=error):
                 self.assertEqual(self.request("/v1/tests", "POST")[0], code)
+
+    def test_daily_summary_is_authenticated_and_does_not_measure(self):
+        self.assertEqual(self.request("/v1/summary/daily", auth=False)[0], 401)
+        with patch.object(self.runner, "run") as heavy:
+            code, body = self.request("/v1/summary/daily")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["count"], 0)
+        self.assertIsNone(body["download_avg_mbps"])
+        heavy.assert_not_called()
 
     def test_reject_empty_token(self):
         with self.assertRaises(ValueError):

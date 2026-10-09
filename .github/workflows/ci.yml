@@ -19,6 +19,19 @@ jobs:
             bash -n "$script"
           done
       - run: node tests/workflow.test.cjs
+      - name: Import workflows in pinned n8n 2.x
+        run: |
+          mkdir -p /tmp/stolas-workflows
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from tools.install import ROOT, workflow
+          for mode in ('alerts_only', 'every_measurement', 'daily_summary'):
+              data = workflow(ROOT, dict(endpoint='http://127.0.0.1:8080', chat_id='123', hours=3, timezone='Etc/UTC', notification_mode=mode, summary_hour=9))
+              data['id'] = mode.replace('_', '')
+              Path('/tmp/stolas-workflows/' + mode + '.json').write_text(json.dumps(data))
+          PY
+          docker run --rm --network none -e N8N_ENCRYPTION_KEY=ci-only-not-deployed-key -e N8N_DIAGNOSTICS_ENABLED=false -v /tmp/stolas-workflows:/fixtures:ro docker.n8n.io/n8nio/n8n:2.42.6@sha256:526daa38b68e923cc00c5280d18b4da5d489f115a73bdbf3b8e452b184197a9a import:workflow --separate --input=/fixtures
       - run: python3 -m agent validate --config config/example.json
       - run: docker build --tag stolas:ci .
       - name: Tests with real iperf3 inside the production image

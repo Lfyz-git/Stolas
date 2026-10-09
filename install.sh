@@ -22,4 +22,4 @@ if ! command -v python3 >/dev/null 2>&1; then
         sudo apt-get install -y python3
     fi
 fi
-exec python3 tools/install.py "$@"
+exec python3 tools/deploy.py "$@"

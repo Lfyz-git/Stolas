@@ -26,29 +26,43 @@ class BootstrapTests(unittest.TestCase):
         self.bin = self.root / "bin"
         self.bin.mkdir()
         stub = self.bin / "curl"
-        stub.write_text("#!" + sys.executable + "\n" + '''import json, os, pathlib, shutil, sys
+        stub.write_text("#!" + sys.executable + "\n" + '''import hashlib, json, os, pathlib, shutil, sys
 pathlib.Path(os.environ["STOLAS_TEST_CURL_LOG"]).write_text(json.dumps(sys.argv[1:]))
 if os.environ.get("STOLAS_TEST_DOWNLOAD_FAIL"):
     sys.exit(22)
-shutil.copyfile(os.environ["STOLAS_TEST_ARCHIVE"], sys.argv[sys.argv.index("--output") + 1])
+destination = sys.argv[sys.argv.index("--output") + 1]
+if sys.argv[-1].endswith("/SHA256SUMS"):
+    digest = os.environ.get("STOLAS_TEST_BAD_HASH") or hashlib.sha256(pathlib.Path(os.environ["STOLAS_TEST_ARCHIVE"]).read_bytes()).hexdigest()
+    pathlib.Path(destination).write_text(digest + "  stolas-v0.2.0.tar.gz\\n")
+else:
+    shutil.copyfile(os.environ["STOLAS_TEST_ARCHIVE"], destination)
 ''')
         stub.chmod(0o755)
         self.env = os.environ.copy()
         self.env["PATH"] = str(self.bin) + os.pathsep + self.env["PATH"]
         self.env["STOLAS_TEST_CURL_LOG"] = str(self.root / "curl.json")
         self.env["STOLAS_TEST_ARCHIVE"] = str(self.archive)
+        self.env["TMPDIR"] = str(self.root)
         self.make_archive()
 
     def make_archive(self, extra=None):
         files = {
-            "install.sh": b'''#!/bin/sh
+            "install.sh": b'#!/bin/sh\ncd "$(dirname "$0")"\nexec python3 tools/deploy.py "$@"\n',
+            "tools/deploy.py": (ROOT / "tools/deploy.py").read_bytes(),
+            "tools/install.py": b'''import pathlib, sys, os
+print('Wizard answer: ', end='', flush=True)
+answer = input()
+pathlib.Path('wizard-answer').write_text(answer)
+pathlib.Path('wizard-args').write_text(' '.join(sys.argv[1:]))
+sys.exit(int(os.getenv('STOLAS_TEST_WIZARD_EXIT', '0')))
+''',
+            "fixture-unused.sh": b'''#!/bin/sh
 printf 'Wizard answer: '
 IFS= read -r answer
 printf '%s' "$answer" > wizard-answer
 printf '%s\\n' "$@" > wizard-args
 exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
 ''',
-            "tools/install.py": b"# fixture\n",
             "agent/config.py": b"# fixture\n",
             "compose.yaml": b"services: {}\n",
             "config/example.json": b"{}\n",
@@ -99,7 +113,12 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
         return code, output.decode("utf-8", errors="replace")
 
     def assert_no_staging(self):
-        self.assertEqual(list(self.root.glob(".stolas-download.*")), [])
+        self.assertEqual(list(self.root.glob("stolas-download.*")), [])
+
+    def assert_diagnostics(self):
+        folders = list(self.root.glob("stolas-download.*"))
+        self.assertTrue(folders)
+        self.assertTrue(all((folder / "diagnostic.txt").is_file() for folder in folders))
 
     def test_pipeline_retains_interactive_input_and_supports_spaces(self):
         code, output = self.pipeline()
@@ -115,7 +134,7 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
         self.assertEqual((self.target / "wizard-answer").read_text(), "answer")
         self.assertIn("--configure-only", (self.target / "wizard-args").read_text())
         call = json.loads((self.root / "curl.json").read_text())
-        self.assertEqual(call[-1], "https://codeload.github.com/Lfyz-git/Stolas/tar.gz/v0.2.0")
+        self.assertEqual(call[-1], "https://github.com/Lfyz-git/Stolas/releases/download/v0.2.0/stolas-v0.2.0.tar.gz")
 
     def test_existing_installation_is_not_overwritten(self):
         self.target.mkdir()
@@ -124,23 +143,22 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
         code, output = self.pipeline()
         self.assertEqual(code, 1, output)
         self.assertEqual(secret.read_text(), "keep-me")
-        self.assertFalse((self.root / "curl.json").exists())
-        self.assert_no_staging()
+        self.assert_diagnostics()
 
     def test_download_failure_does_not_create_installation(self):
         self.env["STOLAS_TEST_DOWNLOAD_FAIL"] = "1"
         code, output = self.pipeline()
         self.assertEqual(code, 1, output)
         self.assertFalse(self.target.exists())
-        self.assertIn("публичный доступ", output)
-        self.assert_no_staging()
+        self.assertIn("Не удалось", output)
+        self.assert_diagnostics()
 
     def test_corrupt_archive_does_not_create_installation(self):
         self.archive.write_bytes(b"not a gzip archive")
         code, output = self.pipeline()
         self.assertEqual(code, 1, output)
         self.assertFalse(self.target.exists())
-        self.assert_no_staging()
+        self.assert_diagnostics()
 
     def test_archive_path_traversal_and_symlinks_are_rejected(self):
         for unsafe in (tarfile.TarInfo("Stolas-test/../../escaped"), tarfile.TarInfo("Stolas-test/link")):
@@ -152,14 +170,44 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
             self.assertEqual(code, 1, output)
             self.assertFalse(self.target.exists())
             self.assertFalse((self.root / "escaped").exists())
-            self.assert_no_staging()
+            self.assert_diagnostics()
 
     def test_wizard_exit_status_is_preserved_and_files_remain_for_retry(self):
         self.env["STOLAS_TEST_WIZARD_EXIT"] = "2"
         code, output = self.pipeline()
         self.assertEqual(code, 2, output)
         self.assertTrue((self.target / "install.sh").exists())
+        self.assert_diagnostics()
+
+    def test_existing_empty_directory_is_accepted(self):
+        self.target.mkdir()
+        code, output = self.pipeline()
+        self.assertEqual(code, 0, output)
+        self.assertEqual((self.target / "wizard-answer").read_text(), "hello")
         self.assert_no_staging()
+
+    def test_installed_directory_offers_reconfigure_and_update(self):
+        self.assertEqual(self.pipeline()[0], 0)
+        for action in ("reconfigure", "update"):
+            code, output = self.pipeline(answers=action + "\nsecond\n")
+            self.assertEqual(code, 0, output)
+            self.assertIn("Stolas уже установлен", output)
+            self.assertEqual((self.target / "wizard-answer").read_text(), "second")
+
+    def test_bad_release_checksum_never_extracts_or_runs_wizard(self):
+        self.env["STOLAS_TEST_BAD_HASH"] = "0" * 64
+        code, output = self.pipeline()
+        self.assertEqual(code, 1, output)
+        self.assertIn("Контрольная сумма", output)
+        self.assertFalse(self.target.exists())
+        self.assert_diagnostics()
+
+    def test_explicit_sha_checksum_and_ref(self):
+        import hashlib
+        digest = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+        code, output = self.pipeline(["--dir", str(self.target), "--ref", "a" * 40, "--sha256", digest])
+        self.assertEqual(code, 0, output)
+        self.assertIn("codeload.github.com", json.loads((self.root / "curl.json").read_text())[-1])
 
     def test_missing_tty_fails_with_actionable_error(self):
         command = "cat " + shlex.quote(str(BOOTSTRAP)) + " | sh -s -- --dir " + shlex.quote(str(self.target))

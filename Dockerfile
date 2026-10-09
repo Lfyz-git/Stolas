@@ -13,6 +13,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 STOLAS_DATA_DIR=/data
 COPY agent /app/agent
 COPY config/example.json /app/config/example.json
 USER 10001:10001
-HEALTHCHECK --interval=60s --timeout=5s CMD python3 -c "import os,urllib.request; r=urllib.request.Request('http://127.0.0.1:'+os.getenv('STOLAS_PORT','8080')+'/healthz',headers={'Authorization':'Bearer '+os.environ['STOLAS_API_TOKEN']}); urllib.request.urlopen(r,timeout=3)" || exit 1
+HEALTHCHECK --interval=15s --timeout=5s CMD python3 -c "import os,urllib.request; h=os.getenv('STOLAS_LISTEN','127.0.0.1'); h='127.0.0.1' if h=='0.0.0.0' else h; r=urllib.request.Request('http://'+h+':'+os.getenv('STOLAS_PORT','8080')+'/healthz',headers={'Authorization':'Bearer '+os.environ['STOLAS_API_TOKEN']}); urllib.request.build_opener(urllib.request.ProxyHandler({})).open(r,timeout=3)" || exit 1
 ENTRYPOINT ["python3", "-m", "agent"]
 CMD ["serve"]

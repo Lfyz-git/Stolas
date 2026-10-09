@@ -1,16 +1,38 @@
-// Test the actual embedded n8n classification code without a live n8n account.
+// Execute the exact Code nodes exported to n8n, including its Settings lookup.
 const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const workflow = JSON.parse(fs.readFileSync('n8n/stolas.json', 'utf8'));
-const classify = new Function('$json', workflow.nodes.find(n => n.name === 'Classify result').parameters.jsCode);
-for (const status of ['ok', 'server_disagreement', 'low_unconfirmed']) {
-  assert.deepEqual(classify({status, wan_alert: false}), []);
+const code = name => new Function('$json', '$', workflow.nodes.find(n => n.name === name).parameters.jsCode);
+const classify = code('Classify result');
+const settings = mode => name => ({first: () => ({json: {notificationMode: mode, chatId: '123'}})});
+const sample = {server: 'test-server', group: 'additional', valid: true, download: {mbps: 1}, upload: {mbps: 2}};
+const cycle = {node: 'test-node', time: 'test-time', id: 'cycle', primary: sample, wan_alert: false};
+for (const mode of ['alerts_only', 'daily_summary']) {
+  for (const status of ['ok', 'server_disagreement', 'low_unconfirmed']) {
+    assert.deepEqual(classify({...cycle, status}, settings(mode)), []);
+  }
 }
 for (const status of ['unavailable', 'route_blocked']) {
-  const result = classify({status, node: 'test-node', id: 'test', wan_alert: false});
-  assert.match(result[0].json.text, /WAN state is unknown/);
+  const text = classify({...cycle, status}, settings('alerts_only'))[0].json.text;
+  assert.match(text, /WAN state is unknown/);
+  assert.doesNotMatch(text, /DL 1/);
 }
-assert.match(classify({error: 'timeout'})[0].json.text, /API unavailable/);
-const sample = {server: 'test-server', download: {mbps: 1}, upload: {mbps: 2}};
-assert.match(classify({wan_alert: true, node: 'test-node', time: 'test-time', id: 'test', primary: sample, confirmation: sample})[0].json.text, /low speed confirmed/);
-console.log('n8n classification: 7 cases passed');
+for (const status of ['ok', 'server_disagreement', 'low_unconfirmed', 'low_confirmed', 'route_blocked', 'unavailable']) {
+  const item = classify({...cycle, status}, settings('every_measurement'))[0].json;
+  assert.equal(item.chatId, '123');
+  assert.match(item.text, /test-node/);
+  assert.match(item.text, /test-time/);
+  assert.match(item.text, new RegExp(status));
+}
+assert.match(classify({error: 'secret-raw-error'}, settings('alerts_only'))[0].json.text, /API unavailable/);
+assert.doesNotMatch(classify({error: 'secret-raw-error'}, settings('alerts_only'))[0].json.text, /secret-raw/);
+assert.match(classify({...cycle, status: 'low_confirmed', wan_alert: true, confirmation: sample}, settings('alerts_only'))[0].json.text, /low speed confirmed/);
+assert.match(classify({...cycle, status: 'ok'}, settings('every_measurement'))[0].json.text, /fallback: yes/);
+const summary = code('Format summary');
+assert.match(summary({count: 0, measured_count: 0}, settings('daily_summary'))[0].json.text, /No valid speeds/);
+assert.doesNotMatch(summary({count: 0, measured_count: 0}, settings('daily_summary'))[0].json.text, /Average DL/);
+assert.match(summary({count: 2, measured_count: 1, download_avg_mbps: 4, upload_avg_mbps: 5}, settings('daily_summary'))[0].json.text, /Average DL 4, UL 5/);
+assert.equal(workflow.nodes.find(n => n.name === 'Daily summary').disabled, true);
+assert.equal(workflow.nodes.find(n => n.name === 'Read summary').parameters.method, 'GET');
+assert.equal(workflow.nodes.find(n => n.name === 'Read summary').parameters.genericAuthType, 'httpHeaderAuth');
+console.log('n8n notification and summary policies passed');

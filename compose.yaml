@@ -1,3 +1,4 @@
+name: ${STOLAS_PROJECT_NAME:-stolas}
 services:
   stolas:
     build: .

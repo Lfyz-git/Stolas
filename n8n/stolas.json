@@ -42,7 +42,7 @@
         0
       ],
       "parameters": {
-        "jsCode": "return [{json: {endpoint: 'https://stolas.example.invalid', chatId: 'REPLACE_WITH_CHAT_ID'}}];"
+        "jsCode": "return [{json: {\"endpoint\": \"https://stolas.example.invalid\", \"chatId\": \"REPLACE_WITH_CHAT_ID\", \"notificationMode\": \"alerts_only\"}}];"
       }
     },
     {
@@ -80,7 +80,81 @@
         0
       ],
       "parameters": {
-        "jsCode": "const r = $json;\n// HTTP/proxy errors are monitoring faults, never a WAN diagnosis.\nif (r.error) return [{json: {text: 'Stolas: API unavailable or request rejected. Check execution details; WAN state is unknown.'}}];\nif (r.wan_alert === true) {\n  const p = r.primary, c = r.confirmation;\n  return [{json: {text: `Stolas ${r.node}: low speed confirmed on two servers (${r.time}).\\n${p.server}: DL ${p.download.mbps}, UL ${p.upload.mbps} Mbps\\n${c.server}: DL ${c.download.mbps}, UL ${c.upload.mbps} Mbps\\nCycle: ${r.id}`}}];\n}\nif (['route_blocked', 'unavailable'].includes(r.status)) {\n  return [{json: {text: `Stolas ${r.node}: measurement unavailable (${r.status}); WAN state is unknown. Cycle: ${r.id}`}}];\n}\nreturn []; // Normal, disagreement and unconfirmed low samples remain in Stolas history.\n"
+        "jsCode": "const r = $json;\nconst settings = $('Settings').first().json;\nconst policy = settings.notificationMode || 'alerts_only';\nconst reply = text => [{json: {text, chatId: settings.chatId}}];\nif (r.error) return reply('Stolas: API unavailable or request rejected. WAN state is unknown.');\nconst bad = ['route_blocked', 'unavailable'].includes(r.status);\nif (policy !== 'every_measurement' && r.wan_alert !== true && !bad) return [];\nconst p = r.primary;\nconst checks = (r.attempts || []).flatMap(a => a.route_checks || []);\nconst failed = checks.find(c => !c.verified && c.reason !== 'explicitly_disabled');\nconst wan = failed ? (failed.verification_status || failed.reason || 'unknown') : checks.length ? (checks.every(c => c.verified) ? 'verified' : 'off') : 'unknown';\nconst measured = p && p.valid !== false && !bad && p.download && p.upload;\nlet text = `Stolas ${r.node || 'unknown'}\\n${r.time || 'unknown time'}\\nStatus: ${r.status || 'unknown'}\\nWAN: ${wan}`;\nif (measured) text += `\\n${p.server}: DL ${p.download.mbps}, UL ${p.upload.mbps} Mbps\\nGroup: ${p.group || 'legacy'}; fallback: ${p.reason === 'fallback' || ['additional', 'emergency'].includes(p.group) ? 'yes' : 'no'}`;\nelse text += '\\nMeasurement unavailable; WAN state is unknown.';\nif (r.wan_alert === true && r.confirmation) {\n  const c = r.confirmation;\n  text += `\\nlow speed confirmed on two servers\\n${c.server}: DL ${c.download.mbps}, UL ${c.upload.mbps} Mbps`;\n}\ntext += `\\nCycle: ${r.id || 'unknown'}`;\nreturn reply(text);\n"
+      }
+    },
+    {
+      "id": "daily-summary",
+      "name": "Daily summary",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        400
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 9,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "disabled": true
+    },
+    {
+      "id": "summary-settings",
+      "name": "Summary settings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        400
+      ],
+      "parameters": {
+        "jsCode": "return [{json: {\"endpoint\": \"https://stolas.example.invalid\", \"chatId\": \"REPLACE_WITH_CHAT_ID\", \"notificationMode\": \"alerts_only\"}}];"
+      }
+    },
+    {
+      "id": "read-summary",
+      "name": "Read summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        400
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.endpoint + '/v1/summary/daily' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "format-summary",
+      "name": "Format summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        400
+      ],
+      "parameters": {
+        "jsCode": "const r = $json;\nconst settings = $('Summary settings').first().json;\nlet text;\nif (r.error) text = 'Stolas: daily summary unavailable. Check API connectivity.';\nelse {\n  text = `Stolas daily summary: ${(r.nodes || []).join(', ') || 'no measurements'}\\n${r.window_start} — ${r.window_end}\\nCycles: ${r.count}; valid measurements: ${r.measured_count}\\nStatuses: ${JSON.stringify(r.statuses || {})}`;\n  if (r.measured_count > 0 && r.download_avg_mbps != null && r.upload_avg_mbps != null) text += `\\nAverage DL ${r.download_avg_mbps}, UL ${r.upload_avg_mbps} Mbps`;\n  else text += '\\nNo valid speeds in retained history.';\n  text += '\\nPreceding 24 hours of retained history; no speed test was started.';\n}\nreturn [{json: {text, chatId: settings.chatId}}];\n"
       }
     },
     {
@@ -93,7 +167,7 @@
         0
       ],
       "parameters": {
-        "chatId": "={{ $('Settings').first().json.chatId }}",
+        "chatId": "={{ $json.chatId }}",
         "text": "={{ $json.text }}",
         "additionalFields": {
           "appendAttribution": false
@@ -147,6 +221,50 @@
       ]
     },
     "Classify result": {
+      "main": [
+        [
+          {
+            "node": "Telegram alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily summary": {
+      "main": [
+        [
+          {
+            "node": "Summary settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summary settings": {
+      "main": [
+        [
+          {
+            "node": "Read summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read summary": {
+      "main": [
+        [
+          {
+            "node": "Format summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format summary": {
       "main": [
         [
           {

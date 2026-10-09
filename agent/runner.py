@@ -43,9 +43,15 @@ class Runner:
 
     def _measure_server(self, server, address, group, reason, result, deadline):
         cfg = self.cfg
-        for attempt in range(cfg["attempts_per_server"]):
+        busy_ports = set()
+        measurement_errors = 0
+        total_limit = cfg["attempts_per_server"] + min(len(server["ports"]), cfg["busy_attempts_per_server"])
+        for attempt in range(total_limit):
             self._remaining(deadline)
-            port = server["ports"][attempt % len(server["ports"])]
+            available = [p for p in server["ports"] if p not in busy_ports]
+            if not available:
+                break
+            port = next((server["ports"][(attempt + offset) % len(server["ports"])] for offset in range(len(server["ports"])) if server["ports"][(attempt + offset) % len(server["ports"])] not in busy_ports))
             sample = {"server": server["id"], "group": group,
                       "selection": cfg["server_groups"][group]["selection"],
                       "endpoint": {"host": server["host"], "address": address, "port": port},
@@ -56,9 +62,9 @@ class Runner:
             attempt_start = time.monotonic()
             try:
                 for direction, reverse in (("download", True), ("upload", False)):
-                    sample["route_checks"].append(probes.guard(cfg, address, min(12, self._remaining(deadline))))
+                    self._route_check(sample, cfg, address, deadline)
                     sample[direction] = probes.measure(cfg, address, port, reverse, min(cfg["process_timeout"], self._remaining(deadline)))
-                    sample["route_checks"].append(probes.guard(cfg, address, min(12, self._remaining(deadline))))
+                    self._route_check(sample, cfg, address, deadline)
                 sample["valid"] = True
                 sample["low_directions"] = [d for d in ("download", "upload") if sample[d]["mbps"] < server["min_" + d + "_mbps"]]
                 return sample
@@ -69,11 +75,28 @@ class Runner:
                     raise
                 if e.kind == "cycle_timeout":
                     raise
+                if e.kind == "server_busy":
+                    busy_ports.add(port)
+                    exhausted = len(busy_ports) >= min(len(server["ports"]), cfg["busy_attempts_per_server"])
+                    sample["switch_reason"] = "busy_ports_exhausted" if exhausted else "next_port_busy"
+                else:
+                    measurement_errors += 1
+                    exhausted = measurement_errors >= cfg["attempts_per_server"]
+                    sample["switch_reason"] = "measurement_attempts_exhausted" if exhausted else "retry_measurement"
+                if exhausted:
+                    break
             finally:
                 sample["duration_seconds"] = round(time.monotonic() - attempt_start, 3)
-            if attempt + 1 < cfg["attempts_per_server"]:
+            if attempt + 1 < total_limit:
                 time.sleep(min(cfg["retry_delay"], self._remaining(deadline)))
         return None
+
+    def _route_check(self, sample, cfg, address, deadline):
+        try:
+            sample["route_checks"].append(probes.guard(cfg, address, min(cfg["route"]["verification_timeout"], self._remaining(deadline))))
+        except probes.ProbeError as error:
+            sample["route_checks"].append({"verified": False, "reason": error.kind, **error.details})
+            raise
 
     def _cycle(self):
         cfg = self.cfg

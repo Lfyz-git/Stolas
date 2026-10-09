@@ -1,7 +1,9 @@
 import contextlib
+import datetime as dt
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 
 
@@ -79,3 +81,23 @@ class Store:
         with self.connect() as db:
             rows = db.execute("SELECT body FROM results ORDER BY seq DESC LIMIT ?", (limit,)).fetchall()
         return [json.loads(row[0]) for row in rows]
+
+    def daily_summary(self, now=None):
+        end = time.time() if now is None else now
+        start = end - 86400
+        counts, downloads, uploads, nodes = {}, [], [], set()
+        with self.connect() as db:
+            for (body,) in db.execute("SELECT body FROM results WHERE started>=? AND started<? ORDER BY seq", (start, end)):
+                result = json.loads(body)
+                counts[result["status"]] = counts.get(result["status"], 0) + 1
+                nodes.add(result["node"])
+                sample = result.get("primary")
+                if sample and sample.get("valid") and result["status"] != "route_blocked":
+                    downloads.append(sample["download"]["mbps"])
+                    uploads.append(sample["upload"]["mbps"])
+        return {"window_start": dt.datetime.fromtimestamp(start, dt.timezone.utc).isoformat(),
+                "window_end": dt.datetime.fromtimestamp(end, dt.timezone.utc).isoformat(),
+                "nodes": sorted(nodes), "count": sum(counts.values()), "statuses": counts,
+                "measured_count": len(downloads), "download_avg_mbps": round(sum(downloads) / len(downloads), 3) if downloads else None,
+                "upload_avg_mbps": round(sum(uploads) / len(uploads), 3) if uploads else None,
+                "note": "Retained history only; window is the preceding 24 hours."}
