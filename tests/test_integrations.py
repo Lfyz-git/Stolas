@@ -208,7 +208,8 @@ class RealN8nTests(unittest.TestCase):
         deadline = time.monotonic() + 100
         while True:
             try:
-                with opener.open(base + "/healthz", timeout=2):
+                # Liveness is available before migrations and routes are ready.
+                with opener.open(base + "/healthz/readiness", timeout=2):
                     break
             except OSError:
                 if time.monotonic() >= deadline:
