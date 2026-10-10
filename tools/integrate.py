@@ -152,7 +152,7 @@ def workflow(root, options):
     nodes = {n["name"]: n for n in data["nodes"]}
     nodes["Every 3 hours"]["parameters"]["rule"]["interval"][0]["hoursInterval"] = options["hours"]
     # JSON encoding avoids injecting user input into the JavaScript Code node.
-    settings_code = "return [{json: " + json.dumps({"endpoint": options["endpoint"], "chatId": options["chat_id"], "notificationMode": options.get("notification_mode", "alerts_only")}, ensure_ascii=False) + "}];"
+    settings_code = "return [{json: " + json.dumps({"endpoint": options["endpoint"], "chatId": options["chat_id"], "notificationMode": options.get("notification_mode", "alerts_only"), "timezone": options["timezone"]}, ensure_ascii=False) + "}];"
     for name in ("Settings", "Summary settings"):
         nodes[name]["parameters"]["jsCode"] = settings_code
     nodes["Daily summary"]["disabled"] = options.get("notification_mode") != "daily_summary"
