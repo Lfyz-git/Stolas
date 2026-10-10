@@ -371,7 +371,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(self.docker.items)
         self.assertTrue(layout.runtime(self.root))
         self.assertFalse((self.root / "tests").exists())
-        result = subprocess.run([__import__("sys").executable, str(self.root / ".stolas/installer/tools/manage.py"), "--root", str(self.root), "help"], capture_output=True, text=True, encoding="utf-8")
+        result = subprocess.run([__import__("sys").executable, "-X", "utf8", str(self.root / ".stolas/installer/tools/manage.py"), "--root", str(self.root), "help"], capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("uninstall", result.stdout)
         with patch("builtins.input", side_effect=["1", "1"]):
