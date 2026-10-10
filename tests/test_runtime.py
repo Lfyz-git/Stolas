@@ -203,6 +203,11 @@ class RuntimeTests(unittest.TestCase):
         frozen_install(self.root); self.docker.legacy(self.root)
         with patch("builtins.input", side_effect=["1", "1"]):
             manage.uninstall(self.root)
+        with patch.object(deploy, "run_installer", side_effect=lambda *a, **k: (self.activate(), 1)[1]), patch.object(resources, "restart") as restart:
+            self.assertEqual(deploy.deploy(ROOT, self.root, action="update"), 1)
+        restart.assert_not_called()
+        self.assertFalse(self.docker.items)
+        self.assertTrue(resources.load(self.root, "resources.json")["uninstalled"])
         with patch.object(deploy, "run_installer", side_effect=lambda *a, **k: self.activate()):
             self.assertEqual(deploy.deploy(ROOT, self.root, action="update"), 0)
         self.assertEqual({p.name for p in self.root.iterdir()}, {"stolas", "compose.yaml", ".env", "config", ".stolas"})

@@ -277,7 +277,7 @@ def rollback_files(target, backup, configure_only=False):
     state = read_json(backup / "state.json")
     docker = resources.stop_replacement(target) if state.get("configured") and not configure_only else None
     restore(target, backup)
-    if docker:
+    if docker and not resources.load(target, "resources.json").get("uninstalled"):
         resources.restart(target, docker)
 
 
