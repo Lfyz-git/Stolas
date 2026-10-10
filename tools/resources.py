@@ -224,4 +224,5 @@ def restart(root, docker):
     except subprocess.TimeoutExpired:
         raise RuntimeError("Файлы восстановлены, но сервис не ответил. Проверьте docker info и повторите откат") from None
     if result.returncode:
-        raise RuntimeError("Файлы восстановлены, но прежний сервис не запустился. Повторите ./stolas rollback после проверки docker info")
+        from tools.diagnostics import command
+        raise RuntimeError("Файлы восстановлены, но прежний сервис не запустился. Повторите " + command(root, "rollback") + " после проверки docker info")

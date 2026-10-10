@@ -194,7 +194,7 @@ class DiscoveryTests(unittest.TestCase):
         with patch.object(env, "port_state", return_value="busy"), patch.object(install, "request_json", return_value={"status": "ready"}) as request:
             install.propose_port(api, facts, self.root)
         self.assertEqual(api["STOLAS_PORT"], "8080")
-        request.assert_called_once()
+        request.assert_not_called()
 
     def test_remote_https_is_user_information_and_never_public_bind(self):
         api, result, count = self.topology(["lan", "https://monitor.example.test"])

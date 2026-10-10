@@ -197,3 +197,41 @@ Archive bootstrap update (2026-10-09):
   existing-install preservation, failed/corrupt downloads, unsafe archive members,
   missing TTY and propagation of the wizard's exit status.
 - Anonymous raw/archive downloading requires the GitHub repository to be public.
+
+
+Issue audit for the next stable version (2026-10-11, branch `fix/issues-next-stable`):
+
+- #13: opt-in Linux test performs real sudo writes of managed files, state and
+  private backups, then restores and writes as the original user. Root-owned
+  installations remain root-owned; an unrelated root-owned file remains untouched.
+  Safe error tests cover EACCES, ENOENT, EROFS and unexpected exceptions without
+  disclosing exception payloads. Diagnosis inspects ownership/access read-only.
+- Real Docker migration additionally upgrades the frozen v0.5.0 runtime through
+  sudo, then configures, diagnoses, reads history, updates and rolls back as the
+  original user. The configure fixture uses recovered measurement state, so it
+  cannot start a public speed test. Token, SQLite row and volume are checked.
+- #14/#15: Moscow, midnight boundary, Berlin spring transition and autumn repeated
+  hour; explicit offsets distinguish repeated hours. Tests cover stale timezone
+  metadata, OS timezone changes, missing IANA data, unknown timezone, process TZ
+  differing from host OS, and a saved n8n timezone overridden by host OS discovery.
+  Existing n8n workflows require explicit manual update from the generated export;
+  diagnosis/CLI do not mutate them. API/JSON and SQLite keep UTC.
+- #11: unavailable installed Docker stops download/staging/wizard before mutation;
+  configured endpoint is kept, own busy port does not require successful health,
+  foreign published ports and unknown listeners stop before service handover.
+  Fresh missing-Docker setup and configure-only keep their existing semantics.
+- #12: full valid DL/UL suppresses only the human server_busy warning. Exhausted
+  busy attempts retain the warning, independent DNS errors stay visible, and
+  attempts/SQLite/JSON retain the original errors.
+- n8n credential choices first select a project, then show only credentials with
+  verified project membership. A two-project regression checks that foreign
+  credential names never reach output. This is presentation filtering, not RBAC.
+- Required GitHub Actions checks include the full Python suite, real sudo fixture,
+  exact exported Code nodes, pinned n8n import/API, image build, v0.4.0/v0.5.0 Docker
+  migration/rollback, real Docker network discovery, iperf3 loopback and Compose.
+  Use the PR checks for the current commit's result; this section describes scope.
+
+Remaining environment-dependent acceptance: actual arm64 execution, clean-host
+apt installation, Telegram delivery and the deployment host's WAN. No Azazel
+installation, OS timezone, Docker socket/group or third-party workflow is changed
+by this audit. No release is published by this task.

@@ -174,13 +174,8 @@ def ports(value):
 
 
 def timezone(value):
-    if value == "Etc/UTC":
-        return value
-    try:
-        ZoneInfo(value)
-    except ZoneInfoNotFoundError:
-        raise ValueError("неизвестный IANA timezone или отсутствует пакет tzdata (Ubuntu: sudo apt-get install tzdata)") from None
-    return value
+    from tools.timezones import validate
+    return validate(value)
 
 
 def https_url(value):
@@ -218,7 +213,7 @@ def write_private(path, content):
     """Atomic replace, owner-only permissions, dated backup when changing a file."""
     if any(item.is_symlink() for item in (path, *path.parents)):
         raise ValueError("Отказ записи через symlink")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    layout.directory(path.parent)
     if path.is_symlink():
         raise ValueError(f"Отказ записи через symlink: {path}")
     runtime_root = next((parent for parent in path.parents if layout.runtime(parent)), None)
@@ -232,10 +227,12 @@ def write_private(path, content):
         with backup.open("x", encoding="utf-8", newline="\n") as file:
             os.chmod(backup, 0o600)
             file.write(path.read_text(encoding="utf-8"))
+        layout.keep_owner(backup, layout.owner_for(path))
     fd, name = tempfile.mkstemp(prefix=".stolas-", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as file:
             file.write(content)
+        layout.keep_owner(Path(name), layout.owner_for(path))
         os.replace(name, path)
     finally:
         if os.path.exists(name):
@@ -335,6 +332,11 @@ def select_named(label, items, names, default=0, automatic=True):
 
 def propose_port(api, facts, root):
     address, initial = api["STOLAS_LISTEN"], int(api["STOLAS_PORT"])
+    if (root / ".env").is_file():
+        saved = read_api(root)
+        if saved["STOLAS_LISTEN"] == address and saved["STOLAS_PORT"] == str(initial):
+            ui().line(f"Сохранённый endpoint {address}:{initial} не изменяется автоматически.")
+            return
     for port in range(initial, min(65536, initial + 100)):
         state = environment.port_state(address, port)
         if state == "free":
@@ -342,21 +344,35 @@ def propose_port(api, facts, root):
                 ui().result(f"Порт {initial} занят. Предлагается свободный порт {port}.", "warning")
             api["STOLAS_PORT"] = str(port)
             return
-        if state == "busy" and port == initial and facts["stolas"] and (root / ".env").exists():
-            try:
-                old = read_api(root)
-                if old["STOLAS_PORT"] == str(port) and old["STOLAS_LISTEN"] == address:
-                    reply = request_json(f"http://{address}:{port}", "/healthz", old["STOLAS_API_TOKEN"])
-                    if reply.get("status") == "ready":
-                        ui().line(f"Существующий Stolas использует порт {port}; он сохранён.")
-                        return
-            except (ValueError, RuntimeError):
-                pass
         if state == "not_local":
             raise ValueError(f"Адрес {address} отсутствует на Linux-хосте. Повторите обнаружение или выберите другую схему подключения")
         if state == "denied":
             raise ValueError(f"ОС не разрешает привязку к {address}:{port}; выберите непривилегированный порт в разделе api")
     raise ValueError(f"Нет свободного порта в диапазоне {initial}–{min(65535, initial + 99)}; измените порт в разделе api")
+
+
+def check_api_port(api, facts, allow_existing=False):
+    """Before stopping the old service: distinguish verified ownership from unknown."""
+    address, port = api["STOLAS_LISTEN"], int(api["STOLAS_PORT"])
+    if not facts["docker"]["available"]:
+        raise RuntimeError(facts["docker"]["reason"] + ". Старый сервис не остановлен; восстановите доступ к Docker")
+    bindings = [b for b in facts.get("port_bindings", []) if b["port"] == port and (address in ("0.0.0.0", "::") or b["address"] in (address, "0.0.0.0", "::", ""))]
+    if any(not b["owned"] for b in bindings):
+        raise RuntimeError(f"Конфликт {address}:{port} подтверждён Docker: порт опубликован посторонним контейнером. Старый Stolas не остановлен; освободите endpoint или явно измените настройку")
+    state = environment.port_state(address, port)
+    if state == "free":
+        return
+    if state == "busy" and allow_existing and facts.get("stolas"):
+        return  # /healthz failure is not evidence of foreign ownership.
+    if state == "busy":
+        raise RuntimeError(f"Endpoint {address}:{port} занят, но принадлежность слушателя не подтверждена. Старый сервис не остановлен; проверьте Docker, ss и повторите диагностику. Порт автоматически не меняется")
+    raise RuntimeError(f"Не удалось проверить привязку {address}:{port}: {state}. Старый сервис не остановлен")
+
+
+def require_docker_access(root, facts=None):
+    facts = facts or environment.discover(root)
+    if not facts["docker"]["available"] and (facts.get("tools", {}).get("docker") or shutil.which("docker")):
+        raise RuntimeError(facts["docker"]["reason"] + ". Мастер остановлен до настройки: восстановите доступ к Docker и повторите команду; доступ через sudo -n также проверен")
 
 
 def save_draft(root, plan):
@@ -458,10 +474,11 @@ def collect_plan(root, existing, facts, reuse=False):
             draft.unlink()
     stages = [] if reuse or configured else [s for s in ("wan",) if s not in plan["completed"]]
     position = 0
-    try:
-        propose_port(plan["api"], facts, root)
-    except ValueError as error:
-        ui().result(str(error), "warning")
+    if not reuse:
+        try:
+            propose_port(plan["api"], facts, root)
+        except ValueError as error:
+            ui().result(str(error), "warning")
     while True:
         section = stages[position] if position < len(stages) else None
         try:
@@ -475,13 +492,9 @@ def collect_plan(root, existing, facts, reuse=False):
                     if plan["config"]["route"]["mode"] == "required" and not plan["config"]["route"]["expected_public_cidrs"]:
                         raise ValueError("Укажите разрешённый IP основного канала в разделе «Проверка интернет-канала»")
                     validate_plan(plan)
-                    if not facts["docker"]["available"] and shutil.which("docker"):
-                        raise ValueError(facts["docker"]["reason"] + ". Исправьте причину и выберите «Повторить обнаружение»")
                     before = copy.deepcopy(plan["api"])
-                    propose_port(plan["api"], facts, root)
-                    if reuse and plan["api"] != before:
-                        plan["api"] = before
-                        raise RuntimeError("Порт занят другим сервисом. Используйте повторную настройку")
+                    if not reuse:
+                        propose_port(plan["api"], facts, root)
                     if plan["api"] != before:
                         ui().result("Порт изменился; проверьте сводку ещё раз.", "warning")
                         continue
@@ -599,8 +612,17 @@ def first_test(compose, root):
     ui().line("\nТест скорости (может занять несколько минут)…")
     result = run(compose + ["exec", "-T", "stolas", "python3", "-m", "agent", "run"], root, capture=True, check=False)
     if result.returncode not in (0, 2):
-        raise RuntimeError("Тест не запущен. Проверьте ./stolas diagnose; повторите ./stolas run после завершения текущего теста")
+        from tools.diagnostics import command
+        raise RuntimeError("Тест не запущен. Проверьте " + command(root) + "; повторите " + command(root, "run") + " после завершения текущего теста")
     data = json.loads(result.stdout)
+    if data.get("time"):
+        from tools import timezones
+        zone = timezones.discover()
+        if zone["name"]:
+            ui().line("Время: " + timezones.display(data["time"], zone["name"]))
+        else:
+            ui().result(zone["error"], "warning")
+            ui().line("Время UTC (пояс ОС не определён): " + data["time"])
     ui().line("Результат теста: " + {"ok": "успешно", "low_confirmed": "подтверждено снижение скорости", "low_unconfirmed": "низкая скорость без независимого подтверждения", "server_disagreement": "серверы показали разные результаты", "route_blocked": "измерение остановлено проверкой канала", "unavailable": "серверы недоступны"}.get(data["status"], data["status"]))
     if "mixed_routing" in data.get("warnings", []):
         ui().line()
@@ -611,6 +633,9 @@ def first_test(compose, root):
         ui().line()
         ui().line("Измерение продолжено; внешний маршрут к серверу не подтверждён.")
     reasons = {error.get("reason") for error in data.get("errors", [])} | {error for attempt in data.get("attempts", []) for error in attempt.get("errors", [])}
+    primary = data.get("primary") or {}
+    if primary.get("valid") and primary.get("download") and primary.get("upload") and data["status"] not in ("unavailable", "route_blocked"):
+        reasons.discard("server_busy")
     explanations = {"route_unconfigured": "Укажите разрешённый внешний IP основного подключения.",
                     "route_public_ip_mismatch": "Внешний IP не совпал с разрешёнными адресами. Проверьте подключение и настройки канала.",
                     "route_verification_unavailable": "Не удалось проверить внешний IP. Проверьте доступ к HTTPS-источникам.",
@@ -649,10 +674,14 @@ def request_json(base, path, token, body=None, n8n=False):
 
 
 def install(root=ROOT, configure_only=False, reuse=False, recover=False):
+    layout.preflight(root)
     current = root / "config/local.json"
     existing = validated(current) if current.exists() else copy.deepcopy(DEFAULT)
     facts = environment.discover(root)
     print_facts(facts)
+    if not configure_only:
+        require_docker_access(root, facts)
+    old_api = read_api(root) if (root / ".env").is_file() else None
     plan = {"config": existing, "api": read_api(root), "completed": []} if recover else collect_plan(root, existing, facts, reuse)
     validate_plan(plan)
     cfg, api = plan["config"], plan["api"]
@@ -687,6 +716,8 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
     run(compose + ["build", "stolas"], root)
     ui().result("образ собран")
     run(compose + ["run", "--rm", "--no-deps", "stolas", "validate"], root)
+    same_endpoint = old_api and all(old_api[k] == api[k] for k in ("STOLAS_LISTEN", "STOLAS_PORT"))
+    check_api_port(api, environment.discover(root), allow_existing=bool(same_endpoint))
     if layout.runtime(root):
         from tools import resources
         resources.activate(root, compose[:compose.index("compose")])
@@ -711,8 +742,9 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
     ui().result("Stolas Core запущен")
     ui().line("API: http://" + api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"])
     ui().line("Токен API сохранён в .env; история — в Docker volume.")
-    ui().line("Результаты: ./stolas history")
-    ui().line("Логи: ./stolas logs")
+    from tools.diagnostics import command
+    ui().line("Результаты: " + command(root, "history"))
+    ui().line("Логи: " + command(root, "logs"))
     checkpoint("complete", first_status=result["status"] if result else None)
     layout.state_path(root, ".stolas-draft.json").unlink()
     if layout.runtime(root):
@@ -747,6 +779,7 @@ def commit_configuration(root, cfg, api):
                     with os.fdopen(fd, "wb") as file:
                         file.write(original[0])
                     os.chmod(name, original[1])
+                    layout.keep_owner(Path(name), layout.owner_for(path))
                     os.replace(name, path)
                 finally:
                     if os.path.exists(name):
@@ -778,7 +811,11 @@ def main():
         ui().result("Установка прервана. Повторите команду для продолжения.", "warning")
         return 130
     except (ValueError, RuntimeError, OSError, KeyError) as error:
-        ui().result(str(error), "error")
+        if isinstance(error, (OSError, KeyError)):
+            from tools.diagnostics import report
+            report(args.root, error)
+        else:
+            ui().result(str(error), "error")
         ui().line("Исправьте причину и повторите команду.")
         return 1
 

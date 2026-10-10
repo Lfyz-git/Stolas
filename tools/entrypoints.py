@@ -1,11 +1,13 @@
 """Owned PATH wrappers; never overwrite a command or edit shell profiles."""
 import hashlib
+import errno
 import json
 import os
 from pathlib import Path
 import re
 import shlex
 import shutil
+from tools import diagnostics
 
 
 def state_path(root):
@@ -22,11 +24,7 @@ def write_state(root, record):
     from tools.deploy import atomic_json
     path = state_path(root)
     atomic_json(path, record)
-    # sudo may create the system wrapper for a user-owned installation. Keep
-    # its private metadata readable by that installation's owner afterwards.
-    if hasattr(os, "chown") and getattr(os, "geteuid", lambda: -1)() == 0:
-        parent = path.parent.stat()
-        os.chown(path, parent.st_uid, parent.st_gid)
+    # atomic_json preserves the installation owner, including after sudo.
 
 
 def content(root):
@@ -68,7 +66,7 @@ def install(root, directory=None, name="stolas"):
     if previous.get("path"):
         if previous["path"] == str(destination) and owned(root, previous):
             return previous
-        raise RuntimeError("Команда уже настроена или изменена. Сначала выполните ./stolas command remove")
+        raise RuntimeError("Команда уже настроена или изменена. Сначала выполните " + diagnostics.command(root, "command remove"))
     existing = shutil.which(name)
     if destination.exists() or destination.is_symlink() or existing and Path(existing).absolute() != root / "stolas":
         raise FileExistsError("Имя «" + name + "» занято. Выберите другое имя команды")
@@ -119,7 +117,7 @@ def configure(root, scope=None, name=None):
     previous = read(root)
     if previous.get("path"):
         terminal.result("Команда настроена: " + previous["path"] if owned(root, previous)
-                        else "Команда изменилась. Проверьте ./stolas command status", "success" if owned(root, previous) else "warning")
+                        else "Команда изменилась. Проверьте " + diagnostics.command(root, "command status"), "success" if owned(root, previous) else "warning")
         return
     user_directory = Path.home() / ".local/bin"
     if "SUDO_USER" in os.environ:
@@ -128,7 +126,7 @@ def configure(root, scope=None, name=None):
     scope = scope or choice("Где разместить команду?", ("user", "system", "later"), "user" if in_path(user_directory) else "later")
     if scope == "later":
         write_state(root, {"declined": True})
-        terminal.line("Позже: ./stolas command install")
+        terminal.line("Позже: " + diagnostics.command(root, "command install"))
         return
     directory = user_directory if scope == "user" else Path("/usr/local/bin")
     terminal.line("Каталог: " + str(directory))
@@ -136,7 +134,7 @@ def configure(root, scope=None, name=None):
         if choice("Установить общую команду в /usr/local/bin?", ("apply", "cancel"), "cancel") != "apply":
             return
         if not os.access(directory if directory.exists() else directory.parent, os.W_OK):
-            raise PermissionError("Нет прав на /usr/local/bin. Выберите пользовательский каталог или запустите эту команду с sudo")
+            raise PermissionError(errno.EACCES, "Выберите пользовательский каталог или запустите команду с sudo", str(directory))
     candidate = name or "stolas"
     while True:
         try:
@@ -160,6 +158,7 @@ def offer(root):
     try:
         configure(root)
     except (Back, Cancel, Rescan, EOFError, KeyboardInterrupt):
-        ui().line("Команда в PATH не настроена. Позже: ./stolas command install")
+        ui().line("Команда в PATH не настроена. Позже: " + diagnostics.command(root, "command install"))
     except (OSError, ValueError, RuntimeError) as error:
-        ui().result(str(error) + ". Core продолжает работать; повтор: ./stolas command install", "warning")
+        from tools import layout
+        ui().result((layout.os_error(error) if isinstance(error, OSError) else str(error)) + ". Core продолжает работать; повтор: " + diagnostics.command(root, "command install"), "warning")

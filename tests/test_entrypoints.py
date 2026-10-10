@@ -93,7 +93,10 @@ class EntrypointTests(unittest.TestCase):
     def test_system_command_removal_requires_rights_before_any_docker_mutation(self):
         record = self.install()
         docker = DockerFixture()
-        with patch.object(resources.environment, "command", side_effect=docker), patch.object(resources, "command", return_value=["docker"]), patch.object(entrypoints.os, "access", return_value=False), patch("builtins.input", side_effect=["remove", "confirm"]), self.assertRaisesRegex(RuntimeError, "Нет прав на удаление команды"):
+        real_access = os.access
+        def access(path, mode):
+            return False if Path(path) == Path(record["path"]).parent else real_access(path, mode)
+        with patch.object(resources.environment, "command", side_effect=docker), patch.object(resources, "command", return_value=["docker"]), patch.object(entrypoints.os, "access", side_effect=access), patch("builtins.input", side_effect=["remove", "confirm"]), self.assertRaisesRegex(RuntimeError, "Нет прав на удаление команды"):
             manage.uninstall(self.root)
         self.assertTrue(entrypoints.owned(self.root, record))
         self.assertFalse(any(c[0] in ("stop", "rm") or c[:2] in (["image", "rm"], ["volume", "rm"]) for c in docker.calls))
@@ -104,7 +107,7 @@ class EntrypointTests(unittest.TestCase):
         parent = (self.root / ".stolas/state").stat()
         with patch.object(entrypoints.os, "geteuid", return_value=0), patch.object(entrypoints.os, "chown") as chown:
             self.install()
-        chown.assert_called_once_with(entrypoints.state_path(self.root), parent.st_uid, parent.st_gid)
+        self.assertTrue(any(c.args[1:] == (parent.st_uid, parent.st_gid) for c in chown.call_args_list))
 
     def test_user_without_sudo_manual_path_decline_and_explicit_system_confirmation(self):
         userbin = self.home / ".local/bin"
@@ -124,8 +127,9 @@ class EntrypointTests(unittest.TestCase):
         with patch("builtins.input", side_effect=[""]), patch.object(entrypoints, "install") as create:
             entrypoints.configure(self.root, "system")
         create.assert_not_called()
-        with patch("builtins.input", side_effect=["apply"]), patch.object(entrypoints.os, "access", return_value=False), self.assertRaises(PermissionError):
+        with patch("builtins.input", side_effect=["apply"]), patch.object(entrypoints.os, "access", return_value=False), self.assertRaises(PermissionError) as caught:
             entrypoints.configure(self.root, "system")
+        self.assertEqual(caught.exception.filename, str(Path("/usr/local/bin")))
 
     def test_update_and_rollback_keep_owned_command_even_to_version_before_path_feature(self):
         import tarfile

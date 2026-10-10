@@ -118,14 +118,43 @@ class IntegrationTests(unittest.TestCase):
 
     def test_project_mismatch_or_unknown_sharing_does_not_post(self):
         self.items[1] = self.credential("api", "httpHeaderAuth", "p2")
-        self.assertFalse(self.connect(("1",)))
+        self.assertFalse(self.connect(("1", "export")))
         self.assertFalse(any(b for p, b in self.calls))
         self.items[1].pop("shared")
-        self.assertFalse(self.connect(("1",)))
+        self.assertFalse(self.connect(("export",)))
         self.assertFalse(any(b for p, b in self.calls))
         for item in self.items:
             item.pop("shared", None)
         self.assertFalse(self.connect(("1",)))
+
+    def test_selected_project_never_displays_foreign_credential_names(self):
+        self.items.extend([self.credential("FOREIGN_TELEGRAM", "telegramApi", "p2"), self.credential("FOREIGN_API", "httpHeaderAuth", "p2")])
+        self.assertTrue(self.connect(("1", "1", "connect")))
+        self.assertNotIn("FOREIGN_TELEGRAM", self.output.getvalue())
+        self.assertNotIn("FOREIGN_API", self.output.getvalue())
+        body = next(body for path, body in self.calls if path == "/workflows")
+        self.assertEqual(body["projectId"], "p1")
+
+    def test_host_timezone_change_exports_existing_workflow_without_remote_mutation(self):
+        self.assertTrue(self.connect())
+        self.calls.clear()
+        self.options["timezone"] = "Europe/Moscow"
+        self.data = integrate.workflow(ROOT, self.options)
+        self.assertFalse(self.connect(()))
+        self.assertEqual(self.calls, [])
+        saved = json.loads((self.root / "n8n/local.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["settings"]["timezone"], "Europe/Moscow")
+        self.assertIn("ручного обновления", " ".join(self.output.getvalue().split()))
+        self.assertIn("/workflow/new-id", self.output.getvalue())
+
+    def test_unknown_host_timezone_stops_before_wizard_or_writes(self):
+        facts = self.installed_core()
+        facts["timezone"] = None
+        facts["timezone_error"] = "Не удалось определить пояс ОС"
+        with patch.object(integrate.environment, "discover", return_value=facts), patch("builtins.input") as prompt, self.assertRaisesRegex(ValueError, "пояс ОС"):
+            integrate.integrate(self.root, "export")
+        prompt.assert_not_called()
+        self.assertFalse((self.root / "n8n/local.json").exists())
 
     def test_only_stolas_header_credential_can_be_created_with_explicit_choice(self):
         self.items = self.items[:1]
@@ -153,6 +182,15 @@ class IntegrationTests(unittest.TestCase):
             self.assertIn('"timezone": "Europe/Moscow"', settings_code)
         self.assertIn("Суточный отчёт", nodes["Format summary"]["parameters"]["jsCode"])
 
+    def test_generator_keeps_current_russian_summary_and_timezone_formatters(self):
+        from tools.build_workflow import build
+        self.assertEqual(build({"timezone": "Europe/Moscow"})["settings"]["timezone"], "Europe/Moscow")
+        template = json.loads((ROOT / "n8n/stolas.json").read_text(encoding="utf-8"))
+        generated = {n["name"]: n for n in build()["nodes"]}
+        for node in template["nodes"]:
+            if node["name"] in ("Classify result", "Format summary"):
+                self.assertEqual(generated[node["name"]]["parameters"]["jsCode"], node["parameters"]["jsCode"])
+
     def test_export_is_inactive_and_never_needs_n8n_api_key(self):
         options = {k: v for k, v in self.options.items() if k != "key"}
         options["mode"] = "export"
@@ -170,11 +208,19 @@ class IntegrationTests(unittest.TestCase):
 
     def test_separate_export_wizard_never_asks_api_key_or_restarts_core(self):
         facts = self.installed_core()
+        facts["timezone"] = "Europe/Moscow"
+        (self.root / "n8n/settings.json").write_text(json.dumps({"timezone": "Europe/Berlin"}))
         original = (self.root / ".env").read_bytes()
-        with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "request_json", return_value={"status": "ready"}), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "123", "", "", "", "apply"]), patch("getpass.getpass") as secret:
+        with patch.dict(os.environ, {"TZ": "Etc/UTC"}), patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "request_json", return_value={"status": "ready"}), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "123", "", "", "apply"]) as prompt, patch("getpass.getpass") as secret:
             self.assertEqual(integrate.integrate(self.root, "export"), 0)
         secret.assert_not_called(); run.assert_not_called()
         self.assertEqual((self.root / ".env").read_bytes(), original)
+        self.assertFalse(any("Часовой пояс" in c.args[0] for c in prompt.call_args_list))
+        exported = json.loads((self.root / "n8n/local.json").read_text(encoding="utf-8"))
+        self.assertEqual(exported["settings"]["timezone"], "Europe/Moscow")
+        for node in exported["nodes"]:
+            if node["name"] in ("Settings", "Summary settings"):
+                self.assertIn('"timezone": "Europe/Moscow"', node["parameters"]["jsCode"])
 
     def test_failed_network_change_restores_core_and_keeps_manual_export(self):
         facts = self.installed_core()
@@ -182,7 +228,7 @@ class IntegrationTests(unittest.TestCase):
         def topology(api, *args):
             api["STOLAS_LISTEN"] = "172.18.0.1"
             return dict(topology="docker", docker_id="abc", endpoint="http://172.18.0.1:8080")
-        with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate, "collect_topology", side_effect=topology), patch.object(integrate, "validate_discovered_endpoint"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "check_connection", side_effect=RuntimeError("exception-private-secret")), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["123", "", "", "", "apply"]):
+        with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate, "collect_topology", side_effect=topology), patch.object(integrate, "validate_discovered_endpoint"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "check_connection", side_effect=RuntimeError("exception-private-secret")), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["123", "", "", "apply"]):
             self.assertEqual(integrate.integrate(self.root, "export"), 2)
         self.assertEqual((self.root / ".env").read_bytes(), original)
         self.assertEqual(run.call_count, 2)
@@ -223,6 +269,7 @@ class RealN8nTests(unittest.TestCase):
         def docker(*args):
             return subprocess.run(["docker", *args], capture_output=True, text=True, check=True, timeout=120).stdout.strip()
         docker("run", "-d", "--name", name, "-p", "127.0.0.1::5678",
+               "-e", "TZ=Etc/UTC", "-e", "GENERIC_TIMEZONE=Etc/UTC",
                "-e", "N8N_ENCRYPTION_KEY=isolated-fixture-only-never-deployed",
                "-e", "N8N_DIAGNOSTICS_ENABLED=false", "-e", "N8N_VERSION_NOTIFICATIONS_ENABLED=false",
                "-e", "N8N_PERSONALIZATION_ENABLED=false", "-e", "N8N_SECURE_COOKIE=false", image)
@@ -249,7 +296,9 @@ class RealN8nTests(unittest.TestCase):
         # This is fixture setup in a disposable instance, never the user's n8n.
         rest("/rest/owner/setup", {"email": "ci@example.test", "firstName": "Stolas", "lastName": "CI", "password": "FixtureOnlyN8n123!"})
         key = rest("/rest/api-keys", {"label": "Stolas integration test", "scopes": ["credential:list", "credential:create", "workflow:create", "workflow:read"], "expiresAt": None})["rawApiKey"]
-        options = dict(mode="api", endpoint="http://127.0.0.1:8080", url=base, key=key, chat_id="123", hours=3, timezone="Etc/UTC")
+        # Different from the disposable n8n container's UTC default: the host
+        # zone already verified by the wizard must survive the actual API import.
+        options = dict(mode="api", endpoint="http://127.0.0.1:8080", url=base, key=key, chat_id="123", hours=3, timezone="Europe/Moscow")
         for kind, values in (("telegramApi", {"accessToken": "123:fixture-not-a-real-bot", "baseUrl": "https://api.telegram.org"}), ("httpHeaderAuth", {"name": "Authorization", "value": "Bearer " + "a" * 40})):
             integrate.request_json(base + "/api/v1", "/credentials", key, {"name": "Existing " + kind, "type": kind, "data": values}, n8n=True)
         before = integrate.list_credentials(options)
@@ -260,6 +309,9 @@ class RealN8nTests(unittest.TestCase):
             workflow = integrate.request_json(base + "/api/v1", "/workflows/" + state["workflow_id"], key, n8n=True)
         secret.assert_not_called()
         self.assertFalse(workflow["active"])
+        self.assertEqual(workflow["settings"]["timezone"], "Europe/Moscow")
+        for settings_node in (n for n in workflow["nodes"] if n["name"] in ("Settings", "Summary settings")):
+            self.assertIn('"timezone": "Europe/Moscow"', settings_node["parameters"]["jsCode"])
         after = integrate.list_credentials(options)
         self.assertEqual({c["id"] for c in before}, {c["id"] for c in after})
         tg = next(c for c in before if c["type"] == "telegramApi")

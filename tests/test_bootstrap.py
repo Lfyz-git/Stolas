@@ -51,6 +51,7 @@ else:
             "install.sh": b'#!/bin/sh\ncd "$(dirname "$0")"\nexec python3 tools/deploy.py "$@"\n',
             "tools/deploy.py": (ROOT / "tools/deploy.py").read_bytes(),
             "tools/environment.py": (ROOT / "tools/environment.py").read_bytes(),
+            "tools/timezones.py": (ROOT / "tools/timezones.py").read_bytes(),
             "tools/terminal.py": (ROOT / "tools/terminal.py").read_bytes(),
             "tools/layout.py": (ROOT / "tools/layout.py").read_bytes(),
             "tools/resources.py": (ROOT / "tools/resources.py").read_bytes(),

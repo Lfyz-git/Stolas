@@ -12,7 +12,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools import entrypoints, environment, layout, resources
+from tools import diagnostics, entrypoints, environment, layout, resources, timezones
 from tools.deploy import atomic_json, install_lock, legacy_files, prune_empty, read_json, replace_file, runtime_files, safe_path
 from tools.install import Back, Cancel, Rescan, ask, choice, clean_env, first_test, LABELS
 from tools.terminal import ui
@@ -62,7 +62,7 @@ def managed_paths(root):
     if not layout.runtime(root):
         names |= legacy_files(root)
     names |= {".env", "config/local.json", ".stolas-install.lock"}
-    for name in ("managed.json", "transaction.json", "resources.json", "handover.json", "identity.json", "draft.json", "progress.json", "status.json", "install.lock", "entrypoint.json"):
+    for name in layout.STATE_FILES:
         names.add(".stolas/state/" + name)
     for name in ("local.json", "settings.json", "install-state.json"):
         names.add(".stolas/integrations/n8n/" + name)
@@ -106,9 +106,6 @@ def preserve_legacy_manager(root):
     for name, source in files.items():
         replace_file(source, layout.bounded(root, name))
     os.chmod(root / "stolas", 0o755)
-    for path in (root / ".stolas").rglob("*"):
-        if path.is_dir() and not path.is_symlink():
-            os.chmod(path, 0o700)
     known = read_json(ROOT / "tools/legacy-v0.4.0.json")
     return legacy & (set(known) - {"compose.yaml"})
 
@@ -179,7 +176,7 @@ def uninstall(root, purge=False):
             if path.is_file():
                 path.unlink()
         prune_empty(root, remove)
-        terminal.result("Stolas удалён полностью" if purge else "Агент удалён. История сохранена; восстановление: ./stolas update")
+        terminal.result("Stolas удалён полностью" if purge else "Агент удалён. История сохранена; восстановление: " + diagnostics.command(root, "update"))
         if purge:
             remaining_files = [p for p in root.rglob("*") if p.is_file() or p.is_symlink()]
             if remaining_files:
@@ -193,6 +190,8 @@ def uninstall(root, purge=False):
 
 
 def update(root, version=None):
+    from tools.install import require_docker_access
+    require_docker_access(root)
     terminal = ui()
     terminal.stage("Обновление")
     if version is None:
@@ -215,7 +214,10 @@ def main():
     sub = parser.add_subparsers(dest="action")
     run = sub.add_parser("run", help="выполнить одно измерение")
     run.add_argument("--json", action="store_true", help="JSON в stdout, события в stderr")
-    sub.add_parser("history", help="получить историю в JSON")
+    history = sub.add_parser("history", help="история (терминал: местное время; перенаправление: JSON)")
+    history_format = history.add_mutually_exclusive_group()
+    history_format.add_argument("--json", action="store_true", help="исходный JSON с UTC")
+    history_format.add_argument("--human", action="store_true", help="читаемая история в часовом поясе ОС")
     sub.add_parser("logs", help="смотреть логи")
     sub.add_parser("configure", help="изменить настройки")
     upgrade = sub.add_parser("update", help="обновить с сохранением истории")
@@ -255,6 +257,7 @@ def main():
         if args.action == "uninstall":
             return uninstall(root, args.purge)
         if args.action == "update":
+            layout.preflight(root)
             return update(root, args.version)
         if args.action in ("configure", "rollback"):
             from tools.deploy import deploy
@@ -274,12 +277,30 @@ def main():
                 if facts["docker"].get("access_warning"):
                     ui().result(facts["docker"]["access_warning"], "warning")
                 ui().line("Настройки: " + ("сохранены" if facts["installation"]["config"] else "не завершены"))
+                diagnostics.permissions(facts)
+                if facts.get("timezone"):
+                    ui().line("Часовой пояс ОС: " + facts["timezone"] + " (" + facts["timezone_source"] + ")")
+                    settings = layout.integration_path(root, "settings.json")
+                    if settings.is_file() and read_json(settings).get("timezone") != facts["timezone"]:
+                        ui().result("Часовой пояс ОС изменился. Выполните " + diagnostics.command(root, "integrate n8n") + "; затем обновите существующий workflow из подготовленного файла.", "warning")
+                    state = read_json(layout.integration_path(root, "install-state.json"))
+                    if state.get("workflow_id") and state.get("workflow_timezone") != facts["timezone"]:
+                        ui().result("Проверьте timezone и публикацию расписания существующего workflow n8n: его сохранённый пояс отличается от ОС или неизвестен. Подготовьте файл через " + diagnostics.command(root, "integrate n8n") + ".", "warning")
+                else:
+                    ui().result(facts.get("timezone_error") or "Часовой пояс ОС не определён", "warning")
             return 0
         docker = resources.command(root)
         compose = resources.compose(root, docker)
         if args.action == "run" and not args.json:
             data = first_test(compose, root)
             return 0 if data["status"] == "ok" else 2
+        if args.action == "history" and (args.human or not args.json and sys.stdout.isatty()):
+            zone = timezones.require()
+            result = subprocess.run(compose + ["exec", "-T", "stolas", "python3", "-m", "agent", "history"], cwd=root, env=clean_env(), capture_output=True, text=True)
+            if result.returncode:
+                raise RuntimeError("Не удалось прочитать историю; проверьте Docker и Stolas")
+            print(timezones.history(json.loads(result.stdout), zone))
+            return 0
         command = compose + (["logs", "--tail", "50", "-f", "stolas"] if args.action == "logs" else ["exec", "-T", "stolas", "python3", "-m", "agent", "run" if args.action == "run" else "history"])
         return subprocess.run(command, cwd=root, env=clean_env()).returncode
     except (Back, Cancel, Rescan):
@@ -291,8 +312,8 @@ def main():
     except (ValueError, RuntimeError) as error:
         ui().result(str(error), "error")
         return 1
-    except (OSError, KeyError, subprocess.SubprocessError):
-        ui().result("Действие не завершено. Проверьте ./stolas diagnose и повторите команду", "error")
+    except (OSError, KeyError, subprocess.SubprocessError) as error:
+        diagnostics.report(args.root, error)
         return 1
 
 

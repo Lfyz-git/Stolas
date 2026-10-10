@@ -9,12 +9,11 @@ import re
 import shutil
 import socket
 import subprocess
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from tools import layout
+from tools import layout, timezones
 
 
 # Select fields at the Docker API boundary; Config.Env never leaves the daemon.
-CONTAINER_FORMAT = '''{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Config.Image}},"command":{{json .Config.Cmd}},"running":{{json .State.Running}},"mode":{{json .HostConfig.NetworkMode}},"networks":{{json .NetworkSettings.Networks}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"directory":{{json (index .Config.Labels "com.docker.compose.project.working_dir")}}}'''
+CONTAINER_FORMAT = '''{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Config.Image}},"command":{{json .Config.Cmd}},"running":{{json .State.Running}},"mode":{{json .HostConfig.NetworkMode}},"ports":{{json .NetworkSettings.Ports}},"networks":{{json .NetworkSettings.Networks}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"directory":{{json (index .Config.Labels "com.docker.compose.project.working_dir")}}}'''
 NETWORK_FORMAT = '''{"id":{{json .Id}},"name":{{json .Name}},"driver":{{json .Driver}},"internal":{{json .Internal}},"ipam":{{json .IPAM.Config}},"bridge":{{json (index .Options "com.docker.network.bridge.name")}}}'''
 
 
@@ -35,25 +34,17 @@ def ipv4(value):
 
 def discover(root):
     root = Path(root).absolute()
+    def readable_file(path):
+        return os.access(path, os.R_OK) and path.is_file()
     facts = {"hostname": socket.gethostname(), "tools": {name: bool(shutil.which(name)) for name in ("docker", "ip", "curl", "wget", "tar", "python3", "apt-get", "sudo")},
              "system": platform.system(), "architecture": platform.machine(),
-             "addresses": [], "n8n": [], "stolas": [], "networks": {}, "warnings": [],
+             "addresses": [], "n8n": [], "stolas": [], "networks": {}, "warnings": [], "port_bindings": [],
              "docker": {"available": False, "command": [], "reason": "Docker не установлен", "access_status": "missing", "requires_sudo": False},
-             "installation": {"directory": str(root), "config": (root / "config/local.json").is_file(),
-                              "env": (root / ".env").is_file(), "draft": layout.state_path(root, ".stolas-draft.json").is_file()}}
-    zone = os.environ.get("TZ")
-    try:
-        if not zone and Path("/etc/timezone").is_file():
-            zone = Path("/etc/timezone").read_text().strip()
-        if not zone:
-            localtime = str(Path("/etc/localtime").resolve())
-            if "/zoneinfo/" in localtime:
-                zone = localtime.split("/zoneinfo/", 1)[1]
-        if zone:
-            ZoneInfo(zone)
-        facts["timezone"] = zone
-    except (OSError, ValueError, ZoneInfoNotFoundError):
-        facts["timezone"] = None
+             "installation": {"directory": str(root), "config": readable_file(root / "config/local.json"),
+                              "env": readable_file(root / ".env"), "draft": readable_file(layout.state_path(root, ".stolas-draft.json"))}}
+    facts["permissions"] = layout.access_report(root)
+    zone = timezones.discover()
+    facts.update(timezone=zone["name"], timezone_source=zone["source"], timezone_error=zone["error"])
     if facts["tools"]["ip"]:
         result = command(["ip", "-j", "-4", "address", "show"])
         try:
@@ -70,13 +61,13 @@ def discover(root):
         path = layout.state_path(root, filename)
         if layout.runtime(root) and filename == ".stolas-install-status.json":
             path = root / ".stolas/state/status.json"
-        if path.is_file() and not path.is_symlink():
+        if os.access(path, os.R_OK) and path.is_file() and not path.is_symlink():
             try:
                 facts["installation"][key] = json.loads(path.read_text()).get(key, "unknown")
             except (ValueError, OSError):
                 facts["warnings"].append("Не читается служебное состояние " + filename)
     progress = layout.state_path(root, ".stolas-progress.json")
-    if progress.is_file() and not progress.is_symlink():
+    if os.access(progress, os.R_OK) and progress.is_file() and not progress.is_symlink():
         try:
             facts["installation"]["wizard_stage"] = json.loads(progress.read_text()).get("stage")
         except (ValueError, OSError):
@@ -89,7 +80,7 @@ def discover(root):
     access = {"access_status": "permission_denied" if permission else "unavailable" if result.returncode else "direct", "requires_sudo": False}
     if permission:
         access["access_warning"] = ("Docker установлен, но текущая учётная запись не имеет доступа к Docker socket. "
-            "Для команд Stolas может потребоваться sudo (с абсолютным путём к ./stolas) либо ручная настройка доступа.")
+            "Для команд Stolas может потребоваться sudo (с абсолютным путём к stolas) либо ручная настройка доступа.")
     facts["docker"].update(access)
     if result.returncode and facts["tools"]["sudo"]:
         elevated = ["sudo", "-n", "docker"]
@@ -132,7 +123,11 @@ def discover(root):
             cmd = container.pop("command", None) or []
             if not container.get("running"):
                 continue
-            if container.get("service") == "stolas" and container.get("directory") and Path(container["directory"]).resolve() == root.resolve():
+            ours = container.get("service") == "stolas" and container.get("directory") and Path(container["directory"]).resolve() == root.resolve()
+            for bindings in (container.pop("ports", None) or {}).values():
+                for binding in bindings or []:
+                    facts["port_bindings"].append({"address": binding["HostIp"], "port": int(binding["HostPort"]), "owned": bool(ours)})
+            if ours:
                 facts["stolas"].append(container)
             image = container.get("image", "").split("@")[0]
             hints = " ".join(str(container.get(k) or "") for k in ("name", "service")).lower()

@@ -167,8 +167,13 @@ class RuntimeDockerTests(unittest.TestCase):
         subprocess.run(compose + ["exec", "-T", "stolas", "python3", "-c", "import json,sys; from agent.storage import Store; Store('/data').save(json.load(sys.stdin),100)"], input=json.dumps(sample), text=True, check=True, timeout=15, env=install.clean_env())
         volume = resources.read_env(self.root)["STOLAS_DATA_VOLUME"]
         before = resources.volume_info(self.root, ["docker"], volume)
-        with patch.object(deploy, "run_installer", side_effect=self.installer):
-            self.assertEqual(deploy.deploy(ROOT, self.root, ref="v0.5.1", action="update"), 0)
+        # Exercise the complete updater and installer as root, then all management
+        # operations as the original user. Never touch the host's real installs.
+        result = subprocess.run(["sudo", "-n", sys.executable, str(ROOT / "tools/deploy.py"), "--target", str(self.root), "--source-ref", "v0.5.1", "--action", "update"], input="apply\nlater\n", text=True, capture_output=True, cwd=ROOT, timeout=300)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.owned_images.add("stolas:0.5.1")
+        for path in self.root.rglob("*"):
+            self.assertEqual(path.stat().st_uid, os.getuid(), str(path))
         binary = Path(self.tmp.name) / "commands"
         wrapper = Path(entrypoints.install(self.root, binary)["path"])
         with patch.object(deploy, "run_installer", side_effect=self.installer):
@@ -181,6 +186,17 @@ class RuntimeDockerTests(unittest.TestCase):
         env = {**install.clean_env(), "PATH": str(binary) + os.pathsep + os.environ["PATH"]}
         def cli(args, answer=""):
             return subprocess.run(["stolas", *args], cwd=self.tmp.name, env=env, input=answer, text=True, capture_output=True, timeout=150)
+        # The fixture's completed cycle stands in for a recovered first test;
+        # configure must not contact public speed-test servers in CI.
+        progress_path = self.root / ".stolas/state/progress.json"
+        progress = deploy.read_json(progress_path)
+        deploy.atomic_json(progress_path, {**progress, "stage": "measured", "measurement_done": True, "first_status": "ok"})
+        result = cli(["configure"], "apply\nlater\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        result = cli(["diagnose", "--json"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(any(p["owner_mismatch"] for p in json.loads(result.stdout)["permissions"]["paths"]))
+        deploy.atomic_json(self.root / ".stolas/state/transaction.json", {"phase": "complete", "backup": previous.relative_to(self.root).as_posix(), "configured": True})
         result = cli(["rollback"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(resources.core_version(self.root), "0.5.0")

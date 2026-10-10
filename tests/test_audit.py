@@ -144,6 +144,9 @@ class PortAuditTests(unittest.TestCase):
 @unittest.skipUnless(HAS_TOOLS, "Installer sources are not in the production image")
 class DeployAuditTests(unittest.TestCase):
     def setUp(self):
+        docker_access = patch.object(install, "require_docker_access")
+        docker_access.start()
+        self.addCleanup(docker_access.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)

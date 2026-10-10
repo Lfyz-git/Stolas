@@ -123,6 +123,8 @@ class InstallerTests(unittest.TestCase):
         shutil.copy2(ROOT / "tools/install.py", self.root / "tools/install.py")
         shutil.copy2(ROOT / "tools/deploy.py", self.root / "tools/deploy.py")
         shutil.copy2(ROOT / "tools/environment.py", self.root / "tools/environment.py")
+        shutil.copy2(ROOT / "tools/timezones.py", self.root / "tools/timezones.py")
+        shutil.copy2(ROOT / "tools/diagnostics.py", self.root / "tools/diagnostics.py")
         shutil.copy2(ROOT / "tools/terminal.py", self.root / "tools/terminal.py")
         shutil.copy2(ROOT / "tools/layout.py", self.root / "tools/layout.py")
         shutil.copy2(ROOT / "tools/entrypoints.py", self.root / "tools/entrypoints.py")
@@ -247,6 +249,7 @@ elif "exec" in sys.argv:
                 self.assertEqual(script, self.root / ".stolas/installer/tools/install-docker.sh")
                 self.assertTrue(script.is_file())
                 self.assertTrue((root / ".env").is_file())
+                facts["docker"] = {"available": True, "command": ["docker"]}
             out = "unix:///var/run/docker.sock" if "context" in args else "amd64" if "--format" in args else ""
             return subprocess.CompletedProcess(args, 0, out, "")
         with patch.object(installer.environment, "discover", return_value=facts), patch.object(installer.environment, "port_state", return_value="free"), patch.object(installer.shutil, "which", side_effect=lambda name: None if name == "docker" else name), patch.object(installer.os, "geteuid", return_value=0, create=True), patch("builtins.input", side_effect=answer), patch.object(installer, "run", side_effect=command), patch.object(resources, "configure"), patch.object(resources, "activate"), patch.object(resources, "complete"), patch.object(installer, "request_json", return_value={"status": "ready"}), patch.object(installer, "first_test", return_value={"status": "ok"}):

@@ -24,6 +24,10 @@ jobs:
           for script in stolas bootstrap.sh install.sh tools/install-docker.sh; do
             bash -n "$script"
           done
+      - name: Preserve user ownership across sudo update and rollback
+        env:
+          STOLAS_PRIVILEGED_TEST: '1'
+        run: python3 -m unittest discover -s tests -p test_permissions.py -v
       - run: node tests/workflow.test.cjs
       - name: Import workflows in pinned n8n 2.x
         run: |
