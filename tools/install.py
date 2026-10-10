@@ -55,6 +55,7 @@ LABELS = {
     "alerts_only": "Только проблемы", "every_measurement": "Каждый результат", "daily_summary": "Сводка за сутки",
     "local": "Только на этой машине (рекомендуется)", "network": "В доверенной сети",
 }
+GROUP_LABELS = {"primary": "Основные", "additional": "Дополнительные", "emergency": "Аварийные"}
 
 
 def ask(label, default="", convert=str, secret=False):
@@ -262,11 +263,11 @@ def collect_config(existing):
         cfg[key] = ask(label, cfg[key], integer(low, high))
     minimum = cfg["seconds"] + cfg["connect_timeout"] + 2
     while cfg["process_timeout"] < minimum:
-        print(f"Таймаут одного iperf3 должен быть не меньше {minimum} секунд.")
+        ui().result(f"Таймаут одного iperf3 должен быть не меньше {minimum} секунд.", "error")
         cfg["process_timeout"] = ask("Таймаут одного iperf3", minimum, integer(minimum, 120))
     cfg["bind_address"] = ask("Локальный IPv4 для iperf3 (-: автоматически)", cfg["bind_address"] or "", lambda v: optional(v, lambda ip: str(ipaddress.IPv4Address(ip))))
     ui().line("\nПроверка канала сравнивает внешний IP до и после измерений.")
-    print("Для строгого запрета тестирования через LTE закрепите трафик на маршрутизаторе.")
+    ui().line("Для строгого запрета тестирования через LTE закрепите трафик на маршрутизаторе.")
     route = cfg["route"]
     route["mode"] = choice("Проверять основной канал перед тестами?", ("required", "off"), route["mode"])
     route["public_ip_urls"] = ask("HTTPS источники внешнего IPv4 через запятую", ",".join(route["public_ip_urls"]), lambda value: list(dict.fromkeys(https_url(item.strip()) for item in value.split(","))))
@@ -276,7 +277,7 @@ def collect_config(existing):
     route["expected_public_cidrs"] = ask("Внешний IPv4 основного WAN /32 или CIDR через запятую" + (" (-: очистить)" if route["mode"] == "off" else ""), ",".join(route["expected_public_cidrs"]), lambda v: [] if route["mode"] == "off" and v in ("", "-") else cidrs(v))
     for key, label in (("interface", "Интерфейс Linux"), ("gateway", "Шлюз Linux")):
         route[key] = ask(label + " (-: не проверять)", route[key] or "", lambda v: optional(v, matching(r"[\w.:-]{1,64}")))
-    print("\nГруппы серверов iperf3. В каждой можно задать любое количество серверов.")
+    ui().line("\nГруппы серверов iperf3. В каждой можно задать любое количество серверов.")
     ui().line("По очереди — с сохранением позиции; случайно — без повторов внутри цикла.")
     descriptions = {
         "primary": "Основные: обычный замер; сначала перебираются серверы этой группы",
@@ -287,18 +288,18 @@ def collect_config(existing):
     for name in GROUPS:
         ui().line(descriptions[name])
         group = cfg["server_groups"][name]
-        group["selection"] = choice("Выбор сервера в группе " + name, ("sequential", "random"), group["selection"])
-        count = ask("Количество серверов в " + name + " (без верхнего ограничения)", len(group["servers"]), integer(1 if name == "primary" else 0))
+        group["selection"] = choice("Выбор сервера — " + GROUP_LABELS[name].lower(), ("sequential", "random"), group["selection"])
+        count = ask("Количество серверов — " + GROUP_LABELS[name].lower(), len(group["servers"]), integer(1 if name == "primary" else 0))
         result = []
         for index in range(count):
             server = copy.deepcopy(group["servers"][index]) if index < len(group["servers"]) else dict(id=f"{name}-{index + 1}", host="", ports=[5201], min_download_mbps=500, min_upload_mbps=500)
-            print(f"{name}: сервер {index + 1}")
+            ui().line(f"{GROUP_LABELS[name]}: сервер {index + 1}")
             for key, label, pattern in (("id", "Идентификатор", r"[a-zA-Z0-9_-]{1,64}"), ("host", "Hostname или IPv4", r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}")):
                 while True:
                     server[key] = ask(label, server[key], matching(pattern))
                     if all(s[key].lower() != server[key].lower() for s in all_servers):
                         break
-                    print("Серверы во всех группах должны иметь разные имена и адреса.")
+                    ui().result("Серверы во всех группах должны иметь разные имена и адреса.", "error")
             server["ports"] = ask("Порты через запятую (максимум 9)", ",".join(map(str, server["ports"])), ports)
             for key, label in (("min_download_mbps", "Минимальный download, Mbps"), ("min_upload_mbps", "Минимальный upload, Mbps")):
                 server[key] = ask(label, server[key], number)
@@ -593,12 +594,12 @@ def docker_command(root):
 
 def first_test(compose, root):
     # Single cycle, same persistent volume and configuration as the API.
-    print("\nПервичный тест скорости через CLI (может занять несколько минут)…", flush=True)
+    ui().line("\nТест скорости (может занять несколько минут)…")
     result = run(compose + ["exec", "-T", "stolas", "python3", "-m", "agent", "run"], root, capture=True, check=False)
     if result.returncode not in (0, 2):
-        raise RuntimeError("CLI-тест не запущен: проверьте конфигурацию, блокировку и cooldown; повтор: docker compose exec stolas python3 -m agent run")
+        raise RuntimeError("Тест не запущен. Проверьте ./stolas diagnose; повторите ./stolas run после завершения текущего теста")
     data = json.loads(result.stdout)
-    ui().line("Результат теста: " + {"ok": "успешно", "low_confirmed": "подтверждено снижение скорости", "route_blocked": "измерение остановлено проверкой канала", "unavailable": "серверы недоступны"}.get(data["status"], data["status"]))
+    ui().line("Результат теста: " + {"ok": "успешно", "low_confirmed": "подтверждено снижение скорости", "low_unconfirmed": "низкая скорость без независимого подтверждения", "server_disagreement": "серверы показали разные результаты", "route_blocked": "измерение остановлено проверкой канала", "unavailable": "серверы недоступны"}.get(data["status"], data["status"]))
     if "mixed_routing" in data.get("warnings", []):
         ui().line()
         ui().result("сервисы определения IP показали разные адреса.", "warning")
@@ -619,7 +620,8 @@ def first_test(compose, root):
     for name in ("primary", "confirmation"):
         sample = data.get(name)
         if sample:
-            print(f"  {sample['server']} [{sample.get('group', 'legacy')}]: DL {sample['download']['mbps']} / UL {sample['upload']['mbps']} Mbps")
+            group = GROUP_LABELS.get(sample.get("group"), "Сервер")
+            ui().line(f"  {sample['server']} ({group.lower()}): DL {sample['download']['mbps']} / UL {sample['upload']['mbps']} Mbps")
     return data
 
 
@@ -765,14 +767,14 @@ def main():
             return 0
         return install(root=args.root, configure_only=args.configure_only, reuse=args.reuse_config, recover=args.recover)
     except Cancel:
-        print("\nОтменено до применения. Действующая конфигурация и контейнеры не изменены.")
+        ui().result("Установка отменена")
         return 3
     except (KeyboardInterrupt, EOFError):
-        print("\nУстановка прервана. Завершённые шаги сохранены в приватном черновике. Повторите команду для продолжения; действующие сервисы не удаляются.", file=sys.stderr)
+        ui().result("Установка прервана. Повторите команду для продолжения.", "warning")
         return 130
     except (ValueError, RuntimeError, OSError, KeyError) as error:
-        print("\nОшибка установки:", str(error), file=sys.stderr)
-        print("Исправьте причину и повторите запуск. Не публикуйте .env и его резервные копии.", file=sys.stderr)
+        ui().result(str(error), "error")
+        ui().line("Исправьте причину и повторите команду.")
         return 1
 
 

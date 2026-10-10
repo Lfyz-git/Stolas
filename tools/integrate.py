@@ -77,13 +77,13 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
         api["STOLAS_LISTEN"] = "127.0.0.1"
     propose_port(api, facts, root)
     if topology in ("lan", "proxy"):
-        print("Нужен ваш уже настроенный HTTPS reverse proxy. Stolas будет доступен proxy на 127.0.0.1:" + api["STOLAS_PORT"] + ".")
+        ui().line("Укажите адрес настроенного HTTPS proxy. Локальный адрес Stolas: 127.0.0.1:" + api["STOLAS_PORT"] + ".")
 
         options["endpoint"] = ask("Ваш HTTPS адрес Stolas на reverse proxy", previous.get("endpoint", ""), https_url)
     else:
         options["endpoint"] = f"http://{api['STOLAS_LISTEN']}:{api['STOLAS_PORT']}"
         connection_url(options["endpoint"], "native" if options.get("network_mode") == "host" else topology)
-        print("Адрес Stolas для n8n сформирован автоматически:", options["endpoint"])
+        ui().line("Адрес Stolas для n8n: " + options["endpoint"])
     return options
 
 
@@ -174,12 +174,13 @@ def check_connection(root, options, api, compose):
             raise RuntimeError("Проверка сети n8n превысила 15 секунд; проверьте Docker и доступность endpoint") from None
         if result.returncode:
             if result.returncode in (126, 127) or "executable file not found" in result.stderr.lower():
-                raise RuntimeError("В контейнере n8n не удалось запустить Node.js. Проверка из его сети НЕ выполнена; проверьте HTTP Request через Manual test. Экспорт сохранён в n8n/local.json")
+                raise RuntimeError("Node.js недоступен в контейнере n8n. Проверьте HTTP Request через Manual test. Файл: " + str(layout.integration_path(root, "local.json")))
             raise RuntimeError("n8n Docker не достигает /healthz. Проверьте IP bridge, адрес STOLAS_LISTEN и firewall; контейнер n8n не изменён")
-        print("Доступ к API проверен из network namespace контейнера n8n.")
+        ui().result("API доступен из контейнера n8n")
     else:
         request_json(options["endpoint"], "/healthz", api["STOLAS_API_TOKEN"])
-        print("/healthz доступен с установочного хоста. Из удалённого n8n/VPN или task runner проверьте Manual test; это отдельное сетевое окружение.")
+        ui().result("API доступен с этой машины")
+        ui().line("В n8n выполните Manual test для проверки доступа.")
 
 
 
@@ -194,7 +195,7 @@ def connect_n8n(root, options, api, data):
     if state.get("url") != options["url"]:
         raise ValueError("Сохранена другая интеграция. Используйте ручной импорт")
     if state.get("pending"):
-        raise ValueError("Предыдущий запрос мог создать ресурс. Проверьте n8n/install-state.json и импортируйте файл вручную")
+        raise ValueError("Предыдущий запрос мог создать ресурс. Проверьте " + str(state_path) + " и импортируйте файл вручную")
     if state.get("workflow_id"):
         ui().result("workflow уже подключён; дубликат не создаётся")
         return True

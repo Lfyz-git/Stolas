@@ -13,7 +13,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools import environment, layout, resources
-from tools.deploy import atomic_json, install_lock, legacy_files, prune_empty, read_json, safe_path
+from tools.deploy import atomic_json, install_lock, legacy_files, prune_empty, read_json, replace_file, runtime_files, safe_path
 from tools.install import Back, Cancel, Rescan, ask, choice, clean_env, first_test, LABELS
 from tools.terminal import ui
 
@@ -87,6 +87,32 @@ def managed_paths(root):
     return names
 
 
+def preserve_legacy_manager(root):
+    """Leave a native offline command after removing a legacy Docker service."""
+    if layout.runtime(root):
+        return set()
+    legacy = legacy_files(root)
+    files = {name: path for name, path in runtime_files(ROOT).items()
+             if name == "stolas" or name.startswith(".stolas/installer/")}
+    if "stolas" not in files:
+        raise RuntimeError("Не найдена команда управления. Запустите удаление из полного архива v0.5.0")
+    previous = read_json(root / ".stolas/state/managed.json")
+    for name in files:
+        path = layout.bounded(root, name)
+        if path.exists() and name not in previous.get("files", []):
+            raise RuntimeError("Файл занят: " + name + ". Переместите его и повторите удаление")
+    # Record exact ownership before copying, so an interrupted copy is recoverable.
+    atomic_json(root / ".stolas/state/managed.json", {"files": sorted(legacy | set(files)), "ref": "v0.4.0"})
+    for name, source in files.items():
+        replace_file(source, layout.bounded(root, name))
+    os.chmod(root / "stolas", 0o755)
+    for path in (root / ".stolas").rglob("*"):
+        if path.is_dir() and not path.is_symlink():
+            os.chmod(path, 0o700)
+    known = read_json(ROOT / "tools/legacy-v0.4.0.json")
+    return legacy & (set(known) - {"compose.yaml"})
+
+
 def uninstall(root, purge=False):
     root = safe_path(root)
     with install_lock(root):
@@ -123,6 +149,7 @@ def uninstall(root, purge=False):
         current = removal_plan(root, docker)
         if current != plan:
             raise RuntimeError("Ресурсы изменились во время подтверждения. Повторите удаление")
+        retired = preserve_legacy_manager(root) if not purge else set()
         resources.save(root, "resources.json", {"project": plan["project"], "instance": plan["instance"], "volume": plan["volume"], "images": plan["images"], "uninstalled": True})
         for item in plan["containers"]:
             resources.call(root, docker, "stop", "--time", "35", item["id"])
@@ -144,7 +171,7 @@ def uninstall(root, purge=False):
                 terminal.result("Общий образ сохранён: " + ref, "warning")
                 continue
             resources.call(root, docker, "image", "rm", ref)
-        remove = names if purge else {name for name in names if name.startswith(".stolas/build/")}
+        remove = names if purge else {name for name in names if name.startswith(".stolas/build/")} | retired
         for name in sorted(remove):
             path = layout.bounded(root, name)
             if path.is_file():

@@ -17,13 +17,19 @@ Stolas пишет JSON Lines в stderr. Docker собирает stdout/stderr; �
 | `service_started`, `service_stopped`, `measurement_completed` | INFO |
 | `configuration_loaded`, `measurement_started` | DEBUG |
 | `server_error`, `server_unavailable`, `server_busy`, `measurement_retry` | WARNING |
-| `speed_degradation_confirmed`, `api_rejected` | WARNING |
+| `speed_degradation_confirmed`, `api_rejected`, `wan_check_warning` | WARNING |
 | `wan_check_failed`, `history_error`, `api_error` | ERROR |
 | `application_failed` | CRITICAL |
 
 Записи содержат только разрешённые поля и коды причин. Исключения, traceback,
 сырые HTTP-запросы, Authorization, URL с секретами и содержимое конфигурации не пишутся.
 Недоступность потока вывода не прерывает измерение.
+
+При смешанных внешних IP событие `wan_check_warning` имеет
+`reason="mixed_routing"`, `test_id` и сервер. Оно записывается один раз за цикл
+на уровне WARNING. Все наблюдения доступны в JSON результата; предупреждение
+не превращает успешный замер в ошибку. Неверный WAN или недоступная проверка
+по-прежнему дают `wan_check_failed` и блокировку измерения.
 
 ## Настроить
 
@@ -60,7 +66,7 @@ journald могут собирать тот же поток; изменений 
 совпадать с существующими), проверьте её `alloy validate <файл>` и примените
 штатным для вашей установки способом. Alloy должен иметь доступ к локальному
 Docker API. Фильтр читает только контейнеры с label `org.stolas.service=core`.
-Для Compose v0.4.0 этот label задан автоматически.
+В установленном Stolas этот label задан автоматически.
 
 В Grafana Explore:
 

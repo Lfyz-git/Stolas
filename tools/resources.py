@@ -209,6 +209,9 @@ def stop_replacement(root):
 
 def restart(root, docker):
     env = {k: v for k, v in __import__("os").environ.items() if not k.startswith(("STOLAS_", "COMPOSE_"))}
-    result = subprocess.run(compose(root, docker) + ["up", "-d", "--wait", "--wait-timeout", "90", "stolas"], cwd=root, env=env, capture_output=True, text=True, timeout=120)
+    try:
+        result = subprocess.run(compose(root, docker) + ["up", "-d", "--wait", "--wait-timeout", "90", "stolas"], cwd=root, env=env, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Файлы восстановлены, но сервис не ответил. Проверьте docker info и повторите откат") from None
     if result.returncode:
         raise RuntimeError("Файлы восстановлены, но прежний сервис не запустился. Повторите ./stolas rollback после проверки docker info")

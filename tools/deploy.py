@@ -170,7 +170,7 @@ def stage_sources(source, target, ref, digest):
     files = runtime_files(source)
     manifest_path = layout.bounded(target, ".stolas/state/managed.json")
     previous = read_json(manifest_path)
-    legacy = legacy_files(target) if not layout.runtime(target) else set()
+    legacy = legacy_files(target) if not layout.runtime(target) else set(previous.get("files", [])) - set(files)
     old_names = set(previous.get("files", [])) | legacy
     for name in files:
         path = layout.bounded(target, name)

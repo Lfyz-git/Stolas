@@ -40,7 +40,29 @@ curl -fsS -X POST -H "Authorization: Bearer $STOLAS_API_TOKEN" \
 | `unavailable` | Полноценного замера нет |
 
 `wan_alert` — данные для внешнего потребителя, а не отправка уведомления.
-Он устанавливается только при подтверждённом снижении с включённой проверкой WAN.
+Он устанавливается только при подтверждённом снижении с согласованными
+проверками WAN. При смешанных IP он остаётся false.
+
+`attempts[].route_checks` хранит сведения HTTPS-проверки: `verified`, `verification_status`,
+`allow_measurement`, `egress_verified` и ответы `sources` с IP либо кодом ошибки.
+При раздельной маршрутизации `verification_status="mixed"`, `verified=false`,
+`allow_measurement=true`; `warnings` содержит `mixed_routing`.
+Само измерение при этом может иметь обычный `status="ok"`.
+`egress_verified=false` означает, что внешний маршрут iperf3 не подтверждён.
+[Правила проверки канала](CONFIGURATION.md#проверка-канала).
+
+## Команда установленного приложения
+
+```sh
+./stolas run
+./stolas run --json
+./stolas history
+./stolas logs
+./stolas help
+```
+
+Без `--json` команда run показывает краткий результат и предупреждения.
+С `--json` сохраняется контракт stdout JSON / stderr события.
 
 ## CLI
 

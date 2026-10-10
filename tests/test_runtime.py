@@ -193,6 +193,19 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(manage.uninstall(self.root), 0)
         self.assertIn(name, self.docker.volumes)
         self.assertFalse(self.docker.items)
+        self.assertTrue(layout.runtime(self.root))
+        self.assertTrue((self.root / "stolas").is_file())
+        self.assertFalse((self.root / "tests").exists())
+        with patch("builtins.input", side_effect=["1", "1"]):
+            self.assertEqual(manage.uninstall(self.root), 0)
+
+    def test_legacy_uninstall_can_restore_a_clean_runtime(self):
+        frozen_install(self.root); self.docker.legacy(self.root)
+        with patch("builtins.input", side_effect=["1", "1"]):
+            manage.uninstall(self.root)
+        with patch.object(deploy, "run_installer", side_effect=lambda *a, **k: self.activate()):
+            self.assertEqual(deploy.deploy(ROOT, self.root, action="update"), 0)
+        self.assertEqual({p.name for p in self.root.iterdir()}, {"stolas", "compose.yaml", ".env", "config", ".stolas"})
 
     def test_volume_collision_also_requests_another_name(self):
         self.runtime()
@@ -356,6 +369,13 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(manage.uninstall(self.root), 0)
         self.assertIn(name, self.docker.volumes)
         self.assertFalse(self.docker.items)
+        self.assertTrue(layout.runtime(self.root))
+        self.assertFalse((self.root / "tests").exists())
+        result = subprocess.run([__import__("sys").executable, str(self.root / ".stolas/installer/tools/manage.py"), "--root", str(self.root), "help"], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("uninstall", result.stdout)
+        with patch("builtins.input", side_effect=["1", "1"]):
+            self.assertEqual(manage.uninstall(self.root), 0)
 
 
 if __name__ == "__main__":

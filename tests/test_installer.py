@@ -73,7 +73,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_low_speed_is_a_completed_test_and_busy_is_an_error(self):
         self.assertEqual(self.install(cli_status="low_confirmed", cli_code=2), 0)
-        with self.assertRaisesRegex(RuntimeError, "CLI-тест не запущен"):
+        with self.assertRaisesRegex(RuntimeError, "Тест не запущен"):
             self.install(cli_code=1)
 
     def test_invalid_config_does_not_overwrite_existing_files(self):
@@ -100,9 +100,9 @@ class InstallerTests(unittest.TestCase):
         count = 0
         def ask(label, default="", convert=str, secret=False):
             nonlocal count
-            if label.startswith("Количество серверов в primary"):
+            if label == "Количество серверов — основные":
                 return 17
-            if label.startswith("Количество серверов в"):
+            if label.startswith("Количество серверов —"):
                 return 0
             if label == "Hostname или IPv4" and not default:
                 count += 1
