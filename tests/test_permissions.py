@@ -37,6 +37,7 @@ class PermissionTests(unittest.TestCase):
         record = json.loads((self.root / ".stolas/state/error.json").read_text())
         self.assertEqual(record["exception"], "KeyError")
         self.assertNotIn("private-token", json.dumps(record))
+        self.assertIn(".stolas/state/error.json", manage.managed_paths(self.root))
 
     def test_preflight_permission_failure_precedes_transaction_or_configuration(self):
         path = str(self.root / ".stolas/state/managed.json")
@@ -76,6 +77,13 @@ backup=deploy.stage_sources(source,root,'sudo-update','')
 resources.save(root,'identity.json',{'instance':'fixture'})
 install.write_private(root/'.env','STOLAS_API_TOKEN=second-token\\n')
 deploy.atomic_json(root/'.stolas/state/progress.json',{'stage':'complete'})
+owned=root/'root-owned-installation'
+owned.mkdir()
+private=owned/'.stolas/state/status.json'
+deploy.atomic_json(private,{'stage':'root-owned'})
+assert private.stat().st_uid == 0
+assert private.parent.stat().st_uid == 0
+private.unlink(); private.parent.rmdir(); (owned/'.stolas').rmdir(); owned.rmdir()
 print(backup)
 """
         result = subprocess.run(["sudo", "-n", sys.executable, "-c", script, str(self.root), str(ROOT)], cwd=ROOT, text=True, capture_output=True, check=True)

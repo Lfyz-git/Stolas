@@ -62,7 +62,7 @@ def managed_paths(root):
     if not layout.runtime(root):
         names |= legacy_files(root)
     names |= {".env", "config/local.json", ".stolas-install.lock"}
-    for name in ("managed.json", "transaction.json", "resources.json", "handover.json", "identity.json", "draft.json", "progress.json", "status.json", "install.lock", "entrypoint.json"):
+    for name in layout.STATE_FILES:
         names.add(".stolas/state/" + name)
     for name in ("local.json", "settings.json", "install-state.json"):
         names.add(".stolas/integrations/n8n/" + name)
