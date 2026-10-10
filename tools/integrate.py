@@ -283,7 +283,7 @@ def integrate(root, mode=None):
                 options["hours"] = ask("Интервал измерений, часов", previous.get("hours", 3), integer(1, 23))
                 from tools import timezones
                 options["timezone"] = timezones.require(facts)
-                ui().line("Часовой пояс ОС: " + options["timezone"] + " (" + facts.get("timezone_source", "ОС") + ")")
+                ui().line("Часовой пояс ОС: " + options["timezone"] + " (" + (facts.get("timezone_source") or "ОС") + ")")
                 options["summary_hour"] = ask("Час сводки", previous.get("summary_hour", 9), integer(0, 23)) if options["notification_mode"] == "daily_summary" else 9
                 if selected_mode == "api":
                     options["url"] = ask("Адрес n8n", previous.get("url", ""), url)

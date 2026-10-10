@@ -182,6 +182,14 @@ class IntegrationTests(unittest.TestCase):
             self.assertIn('"timezone": "Europe/Moscow"', settings_code)
         self.assertIn("Суточный отчёт", nodes["Format summary"]["parameters"]["jsCode"])
 
+    def test_generator_keeps_current_russian_summary_and_timezone_formatters(self):
+        from tools.build_workflow import build
+        template = json.loads((ROOT / "n8n/stolas.json").read_text(encoding="utf-8"))
+        generated = {n["name"]: n for n in build()["nodes"]}
+        for node in template["nodes"]:
+            if node["name"] in ("Classify result", "Format summary"):
+                self.assertEqual(generated[node["name"]]["parameters"]["jsCode"], node["parameters"]["jsCode"])
+
     def test_export_is_inactive_and_never_needs_n8n_api_key(self):
         options = {k: v for k, v in self.options.items() if k != "key"}
         options["mode"] = "export"
@@ -199,12 +207,19 @@ class IntegrationTests(unittest.TestCase):
 
     def test_separate_export_wizard_never_asks_api_key_or_restarts_core(self):
         facts = self.installed_core()
+        facts["timezone"] = "Europe/Moscow"
+        (self.root / "n8n/settings.json").write_text(json.dumps({"timezone": "Europe/Berlin"}))
         original = (self.root / ".env").read_bytes()
-        with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "request_json", return_value={"status": "ready"}), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "123", "", "", "apply"]) as prompt, patch("getpass.getpass") as secret:
+        with patch.dict(os.environ, {"TZ": "Etc/UTC"}), patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "request_json", return_value={"status": "ready"}), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "123", "", "", "apply"]) as prompt, patch("getpass.getpass") as secret:
             self.assertEqual(integrate.integrate(self.root, "export"), 0)
         secret.assert_not_called(); run.assert_not_called()
         self.assertEqual((self.root / ".env").read_bytes(), original)
         self.assertFalse(any("Часовой пояс" in c.args[0] for c in prompt.call_args_list))
+        exported = json.loads((self.root / "n8n/local.json").read_text(encoding="utf-8"))
+        self.assertEqual(exported["settings"]["timezone"], "Europe/Moscow")
+        for node in exported["nodes"]:
+            if node["name"] in ("Settings", "Summary settings"):
+                self.assertIn('"timezone": "Europe/Moscow"', node["parameters"]["jsCode"])
 
     def test_failed_network_change_restores_core_and_keeps_manual_export(self):
         facts = self.installed_core()

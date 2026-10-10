@@ -23,7 +23,7 @@ let localTime = 'unknown time';
 try {
   if (!settings.timezone) throw new Error();
   const date = new Date(r.time);
-  localTime = new Intl.DateTimeFormat('ru-RU', {timeZone: settings.timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false}).format(date) + ' (' + settings.timezone + ')';
+  localTime = new Intl.DateTimeFormat('ru-RU', {timeZone: settings.timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZoneName: 'shortOffset'}).format(date) + ' (' + settings.timezone + ')';
 } catch { localTime = 'Часовой пояс ОС или время не определены; обновите workflow через stolas integrate n8n'; }
 let text = `Stolas ${r.node || 'unknown'}\n${localTime}\nStatus: ${r.status || 'unknown'}\nWAN: ${wan}`;
 if (measured) text += `\n${p.server}: DL ${p.download.mbps}, UL ${p.upload.mbps} Mbps\nGroup: ${p.group || 'legacy'}; fallback: ${p.reason === 'fallback' || ['additional', 'emergency'].includes(p.group) ? 'yes' : 'no'}`;
@@ -73,7 +73,8 @@ const formatTime = value => {
       timeZone: timezone,
       day: '2-digit', month: '2-digit',
       hour: '2-digit', minute: '2-digit',
-      hour12: false
+      hour12: false,
+      ...(timezone === 'Europe/Moscow' || timezone === 'Etc/UTC' ? {} : {timeZoneName: 'shortOffset'})
     }).format(date);
   } catch {
     return 'неизвестно';

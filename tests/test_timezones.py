@@ -18,6 +18,7 @@ if HAS_TOOLS:
 class TimezoneTests(unittest.TestCase):
     def test_moscow_and_day_boundary(self):
         self.assertIn("2026-10-10 23:18:00", timezones.display("2026-10-10T20:18:00Z", "Europe/Moscow"))
+        self.assertIn("23:18:23 МСК +0300", timezones.display("2026-10-10T20:18:23Z", "Europe/Moscow"))
         self.assertIn("2026-10-11 01:18:00", timezones.display("2026-10-10T22:18:00+00:00", "Europe/Moscow"))
 
     def test_berlin_dst_forward_and_repeated_hour(self):

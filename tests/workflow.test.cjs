@@ -59,6 +59,9 @@ assert.match(daily({...normal, window_start: '2026-10-10T22:18:00Z'}, 'Europe/Mo
 assert.match(daily({...normal, window_start: '2026-03-29T00:30:00Z', window_end: '2026-03-29T01:30:00Z'}, 'Europe/Berlin').text, /01:30.*03:30/);
 assert.match(classify({...cycle, status: 'ok', time: '2026-03-29T01:30:00Z'}, settings('every_measurement', 'Europe/Berlin'))[0].json.text, /03:30:00/);
 assert.match(classify({...cycle, status: 'ok'}, settings('every_measurement', ''))[0].json.text, /Часовой пояс ОС.*не определены/);
+assert.match(daily({...normal, window_start: '2026-10-25T00:30:00Z', window_end: '2026-10-25T01:30:00Z'}, 'Europe/Berlin').text, /02:30.*GMT\+2.*02:30.*GMT\+1/);
+assert.match(classify({...cycle, status: 'ok', time: '2026-10-25T00:30:00Z'}, settings('every_measurement', 'Europe/Berlin'))[0].json.text, /02:30:00 GMT\+2/);
+assert.match(classify({...cycle, status: 'ok', time: '2026-10-25T01:30:00Z'}, settings('every_measurement', 'Europe/Berlin'))[0].json.text, /02:30:00 GMT\+1/);
 
 const confirmed = daily({...normal, statuses: {ok: 5, low_confirmed: 1}});
 assert.match(confirmed.text, /🔴 Обнаружены проблемы/);

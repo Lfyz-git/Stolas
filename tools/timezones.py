@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 def validate(name):
-    if not name or name.startswith(("+", "-")) or name in ("MSK", "CET", "CEST"):
+    if not name or name.startswith(("+", "-")) or name == "MSK":
         raise ValueError("Нужен IANA timezone, например Europe/Moscow или Europe/Berlin; сокращение/смещение не определяет правила DST")
     try:
         ZoneInfo(name)
@@ -14,7 +14,7 @@ def validate(name):
             ZoneInfo("Europe/Moscow")
         except ZoneInfoNotFoundError:
             raise ValueError("Недоступна база IANA: установите tzdata (Ubuntu: sudo apt-get install tzdata)") from None
-        raise ValueError("Неизвестный IANA timezone: " + name) from None
+        raise ValueError("Неизвестный IANA timezone: " + name + "; пример: Europe/Moscow или Europe/Berlin") from None
     return name
 
 
@@ -52,7 +52,10 @@ def display(value, name):
     moment = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
     if moment.tzinfo is None:
         raise ValueError("Временная метка не содержит смещение UTC")
-    return moment.astimezone(ZoneInfo(validate(name))).strftime("%Y-%m-%d %H:%M:%S %Z %z") + " (" + name + ")"
+    text = moment.astimezone(ZoneInfo(validate(name))).strftime("%Y-%m-%d %H:%M:%S %Z %z")
+    if name == "Europe/Moscow":
+        text = text.replace(" MSK ", " МСК ")
+    return text + " (" + name + ")"
 
 
 def history(rows, name):
