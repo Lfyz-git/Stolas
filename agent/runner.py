@@ -65,9 +65,9 @@ class Runner:
             attempt_start = time.monotonic()
             try:
                 for direction, reverse in (("download", True), ("upload", False)):
-                    self._route_check(sample, cfg, address, deadline)
+                    self._route_check(sample, cfg, address, deadline, result)
                     sample[direction] = probes.measure(cfg, address, port, reverse, min(cfg["process_timeout"], self._remaining(deadline)))
-                    self._route_check(sample, cfg, address, deadline)
+                    self._route_check(sample, cfg, address, deadline, result)
                 sample["valid"] = True
                 sample["low_directions"] = [d for d in ("download", "upload") if sample[d]["mbps"] < server["min_" + d + "_mbps"]]
                 return sample
@@ -96,9 +96,13 @@ class Runner:
                 time.sleep(min(cfg["retry_delay"], self._remaining(deadline)))
         return None
 
-    def _route_check(self, sample, cfg, address, deadline):
+    def _route_check(self, sample, cfg, address, deadline, result):
         try:
-            sample["route_checks"].append(probes.guard(cfg, address, min(cfg["route"]["verification_timeout"], self._remaining(deadline))))
+            check = probes.guard(cfg, address, min(cfg["route"]["verification_timeout"], self._remaining(deadline)))
+            sample["route_checks"].append(check)
+            if check.get("warning") and check["warning"] not in result.setdefault("warnings", []):
+                result["warnings"].append(check["warning"])
+                emit("wan_check_warning", "WARNING", test_id=result["id"], server=sample["server"], reason=check["warning"])
         except probes.ProbeError as error:
             sample["route_checks"].append({"verified": False, "reason": error.kind, **error.details})
             raise
@@ -156,7 +160,8 @@ class Runner:
                 elif set(first["low_directions"]) & set(second["low_directions"]):
                     result["status"] = "low_confirmed"
                     # Explicitly disabled route checks cannot justify a WAN alert.
-                    result["wan_alert"] = cfg["route"]["mode"] == "required"
+                    result["wan_alert"] = cfg["route"]["mode"] == "required" and all(
+                        check.get("verified", False) for sample in (first, second) for check in sample["route_checks"])
                 else:
                     result["status"] = "server_disagreement"
         result["duration_seconds"] = round(time.monotonic() - start, 3)

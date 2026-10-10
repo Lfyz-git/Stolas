@@ -52,12 +52,17 @@ class WanAuditTests(unittest.TestCase):
         self.assertEqual([s["reason"] for s in check["sources"]], ["dns_error"] * 3)
         measure.assert_not_called()
 
-    def test_mismatch_and_conflict_are_distinct(self):
-        for values, kind in ((["198.51.100.1"] * 3, "route_public_ip_mismatch"), (["192.0.2.1", "198.51.100.1", "192.0.2.1"], "route_verification_conflict")):
+    def test_mismatch_blocks_but_mixed_allowed_wan_can_continue(self):
+        for values, kind in ((["198.51.100.1"] * 3, "route_public_ip_mismatch"), (["198.51.100.1", "198.51.100.2", "198.51.100.1"], "route_public_ip_mismatch")):
             with self.subTest(kind=kind), self.assertRaises(ProbeError) as error:
                 self.guard(values)
             self.assertEqual(error.exception.kind, kind)
             self.assertFalse(error.exception.details["verified"])
+        mixed = self.guard(["192.0.2.1", "198.51.100.1", "198.51.100.1"])
+        self.assertFalse(mixed["verified"])
+        self.assertFalse(mixed["egress_verified"])
+        self.assertEqual(mixed["verification_status"], "mixed")
+        self.assertTrue(mixed["allow_measurement"])
 
     def test_minimum_confirmations_and_time_budget(self):
         self.cfg["route"]["min_confirmations"] = 2
@@ -144,7 +149,7 @@ class DeployAuditTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.source = self.root / "source"
         self.source.mkdir()
-        for name in ("install.sh", "tools/install.py", "tools/deploy.py", "agent/config.py", "compose.yaml"):
+        for name in ("stolas", "install.sh", "tools/install.py", "tools/deploy.py", "agent/config.py", "compose.yaml"):
             path = self.source / name
             path.parent.mkdir(exist_ok=True)
             path.write_text("old")
@@ -185,9 +190,9 @@ class DeployAuditTests(unittest.TestCase):
         (self.target / "config/local.json").write_text("custom")
         (self.source / "agent/config.py").write_text("new")
         self.run_deploy("reconfigure")
-        self.assertEqual((self.target / "agent/config.py").read_text(), "new")
+        self.assertEqual((self.target / ".stolas/build/agent/config.py").read_text(), "new")
         self.run_deploy("update")
-        self.assertEqual((self.target / "agent/config.py").read_text(), "new")
+        self.assertEqual((self.target / ".stolas/build/agent/config.py").read_text(), "new")
         self.assertEqual((self.target / ".env").read_text(), "secret")
         self.assertEqual((self.target / "config/local.json").read_text(), "custom")
 
@@ -199,16 +204,19 @@ class DeployAuditTests(unittest.TestCase):
         (self.source / "agent/config.py").write_text("broken")
         with patch.object(deploy, "run_installer", side_effect=[1, 0]):
             self.assertEqual(deploy.deploy(self.source, self.target, action="update"), 1)
-        self.assertEqual((self.target / "agent/config.py").read_text(), "old")
-        status = json.loads((self.target / ".stolas-install-status.json").read_text())
+        self.assertEqual((self.target / ".stolas/build/agent/config.py").read_text(), "old")
+        status = json.loads((self.target / ".stolas/state/status.json").read_text())
         self.assertEqual(status["stage"], "rolled_back")
 
     def test_manual_rollback(self):
         self.run_deploy()
+        (self.target / ".env").write_text("existing")
+        (self.target / "config").mkdir()
+        (self.target / "config/local.json").write_text("{}")
         (self.source / "agent/config.py").write_text("new")
         self.run_deploy("update")
         self.run_deploy("rollback")
-        self.assertEqual((self.target / "agent/config.py").read_text(), "old")
+        self.assertEqual((self.target / ".stolas/build/agent/config.py").read_text(), "old")
 
     @unittest.skipIf(os.name == "nt", "POSIX flock/symlinks")
     def test_competing_installers_and_symlinks(self):
@@ -233,16 +241,15 @@ class DeployAuditTests(unittest.TestCase):
             return original(source, target)
         with patch.object(deploy, "replace_file", side_effect=copy_once), self.assertRaises(OSError):
             self.run_deploy("update")
-        self.assertEqual((self.target / "agent/config.py").read_text(), "old")
+        self.assertEqual((self.target / ".stolas/build/agent/config.py").read_text(), "old")
 
     def test_journal_recovers_incomplete_first_install_and_can_retry(self):
         self.target.mkdir()
         deploy.stage_sources(self.source, self.target, "test", "")
         # Simulate a killed process while only part of the checkout is visible.
-        (self.target / "install.sh").unlink()
-        self.assertEqual(self.run_deploy(), 1)
-        self.assertFalse((self.target / "agent/config.py").exists())
+        (self.target / ".stolas/installer/tools/install.py").unlink()
         self.assertEqual(self.run_deploy(), 0)
+        self.assertTrue((self.target / ".stolas/installer/tools/install.py").is_file())
 
 
 @unittest.skipUnless(HAS_TOOLS, "Installer sources are not in the production image")

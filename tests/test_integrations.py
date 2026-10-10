@@ -47,7 +47,7 @@ class IntegrationTests(unittest.TestCase):
             return {"data": self.items, "nextCursor": None}
         return {"id": "new-id"}
 
-    def connect(self, answers=("connect",)):
+    def connect(self, answers=("1", "connect")):
         with patch.object(integrate, "request_json", side_effect=self.request), patch("builtins.input", side_effect=answers), patch("getpass.getpass") as secret:
             result = integrate.connect_n8n(self.root, self.options, self.api, self.data)
         secret.assert_not_called()
@@ -71,11 +71,20 @@ class IntegrationTests(unittest.TestCase):
 
     def test_multiple_credentials_use_named_selection(self):
         self.items.insert(1, self.credential("tg2", "telegramApi"))
-        self.assertTrue(self.connect(("2", "connect")))
+        self.assertTrue(self.connect(("2", "1", "connect")))
         body = next(b for p, b in self.calls if b)
         telegram = next(n for n in body["nodes"] if n["name"] == "Telegram alert")
         self.assertEqual(telegram["credentials"]["telegramApi"]["id"], "tg2")
         self.assertIn("tg2 credential", self.output.getvalue())
+
+    def test_single_unknown_header_requires_explicit_selection(self):
+        self.assertTrue(self.connect(("1", "connect")))
+        self.assertIn("Credential доступа к Stolas — номер варианта", self.output.getvalue())
+
+    def test_owned_header_id_can_be_reused_without_selection(self):
+        (self.root / "n8n/install-state.json").write_text(json.dumps({"url": self.options["url"], "credentials": [{"id": "api", "type": "httpHeaderAuth"}]}))
+        self.assertTrue(self.connect(("connect",)))
+        self.assertNotIn("Credential доступа к Stolas — номер варианта", self.output.getvalue())
 
     def test_missing_credentials_exports_and_does_not_post(self):
         self.items = []
@@ -109,14 +118,14 @@ class IntegrationTests(unittest.TestCase):
 
     def test_project_mismatch_or_unknown_sharing_does_not_post(self):
         self.items[1] = self.credential("api", "httpHeaderAuth", "p2")
-        self.assertFalse(self.connect(()))
+        self.assertFalse(self.connect(("1",)))
         self.assertFalse(any(b for p, b in self.calls))
         self.items[1].pop("shared")
-        self.assertFalse(self.connect(()))
+        self.assertFalse(self.connect(("1",)))
         self.assertFalse(any(b for p, b in self.calls))
         for item in self.items:
             item.pop("shared", None)
-        self.assertFalse(self.connect(()))
+        self.assertFalse(self.connect(("1",)))
 
     def test_only_stolas_header_credential_can_be_created_with_explicit_choice(self):
         self.items = self.items[:1]
@@ -190,7 +199,7 @@ class IntegrationTests(unittest.TestCase):
         thread.start()
         self.addCleanup(server.server_close); self.addCleanup(thread.join); self.addCleanup(server.shutdown)
         self.options["url"] = f"http://127.0.0.1:{server.server_port}"
-        with patch("builtins.input", return_value="connect"):
+        with patch("builtins.input", side_effect=["1", "connect"]):
             self.assertTrue(integrate.connect_n8n(self.root, self.options, self.api, self.data))
         self.assertEqual([p for p, b in received], ["/api/v1/credentials?limit=100", "/api/v1/workflows"])
 
@@ -233,7 +242,7 @@ class RealN8nTests(unittest.TestCase):
         for kind, values in (("telegramApi", {"accessToken": "123:fixture-not-a-real-bot", "baseUrl": "https://api.telegram.org"}), ("httpHeaderAuth", {"name": "Authorization", "value": "Bearer " + "a" * 40})):
             integrate.request_json(base + "/api/v1", "/credentials", key, {"name": "Existing " + kind, "type": kind, "data": values}, n8n=True)
         before = integrate.list_credentials(options)
-        with tempfile.TemporaryDirectory() as directory, patch("builtins.input", return_value="connect"), patch("getpass.getpass") as secret:
+        with tempfile.TemporaryDirectory() as directory, patch("builtins.input", side_effect=["1", "connect"]), patch("getpass.getpass") as secret:
             root = Path(directory)
             self.assertTrue(integrate.connect_n8n(root, options, {"STOLAS_API_TOKEN": "a" * 40}, integrate.workflow(ROOT, options)))
             state = json.loads((root / "n8n/install-state.json").read_text())

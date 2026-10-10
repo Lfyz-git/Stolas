@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+export PYTHONDONTWRITEBYTECODE=1
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec python3 "$root/.stolas/installer/tools/manage.py" --root "$root" "$@"

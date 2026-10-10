@@ -10,7 +10,7 @@ EVENTS = {
     "measurement_started", "measurement_completed", "server_error",
     "measurement_retry", "server_busy", "server_unavailable", "wan_check_failed",
     "speed_degradation_confirmed", "history_error", "api_error", "api_rejected",
-    "application_failed",
+    "application_failed", "wan_check_warning",
 }
 FIELDS = {"test_id", "server", "status", "duration_ms", "download_mbps", "upload_mbps", "attempt", "reason", "http_status", "operation"}
 logger = logging.getLogger("stolas")

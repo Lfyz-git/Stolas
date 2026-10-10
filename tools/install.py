@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from agent.config import DEFAULT, GROUPS, load  # noqa: E402
-from tools import environment  # noqa: E402
+from tools import environment, layout  # noqa: E402
 from tools.terminal import ui  # noqa: E402
 
 
@@ -220,8 +220,14 @@ def write_private(path, content):
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
         raise ValueError(f"Отказ записи через symlink: {path}")
-    if path.exists():
-        backup = path.with_name(path.name + ".bak-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + secrets.token_hex(3))
+    runtime_root = next((parent for parent in path.parents if layout.runtime(parent)), None)
+    if path.exists() and (runtime_root is None or path == runtime_root / ".env" or path == runtime_root / "config/local.json"):
+        suffix = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + secrets.token_hex(3)
+        backup = path.with_name(path.name + ".bak-" + suffix)
+        if runtime_root:
+            directory = layout.bounded(runtime_root, ".stolas/backups/settings/" + suffix)
+            layout.private_dir(directory)
+            backup = directory / path.name
         with backup.open("x", encoding="utf-8", newline="\n") as file:
             os.chmod(backup, 0o600)
             file.write(path.read_text(encoding="utf-8"))
@@ -354,10 +360,10 @@ def propose_port(api, facts, root):
 
 def save_draft(root, plan):
     plan = {k: v for k, v in plan.items() if k in ("config", "api", "completed", "version")}
-    path = root / ".stolas-draft.json"
+    path = layout.state_path(root, ".stolas-draft.json")
     if any(item.is_symlink() for item in (path, *path.parents)):
         raise ValueError("Черновик не записывается через symlink")
-    fd, name = tempfile.mkstemp(prefix=".stolas-draft-", dir=root)
+    fd, name = tempfile.mkstemp(prefix=".stolas-draft-", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as file:
             json.dump(plan, file, ensure_ascii=False)
@@ -425,7 +431,7 @@ def print_plan(plan, facts, reuse=False):
 def collect_plan(root, existing, facts, reuse=False):
     api = read_api(root) if (root / ".env").exists() else {"STOLAS_API_TOKEN": secrets.token_urlsafe(32), "STOLAS_LISTEN": "127.0.0.1", "STOLAS_PORT": "8080"}
     plan = {"config": copy.deepcopy(existing), "api": api, "completed": [], "version": 2}
-    draft = root / ".stolas-draft.json"
+    draft = layout.state_path(root, ".stolas-draft.json")
     configured = (root / "config/local.json").exists() and (root / ".env").exists()
     if not configured:
         plan["config"]["node"] = re.sub(r"[^\w.-]", "-", facts["hostname"])[:64] or "stolas-node"
@@ -562,6 +568,10 @@ def docker_command(root):
     arch = run(command + ["info", "--format", "{{.Architecture}}"], root, capture=True).stdout.strip()
     if arch not in ("x86_64", "amd64", "aarch64", "arm64"):
         raise RuntimeError("Production-образ поддерживает только amd64/arm64.")
+    if layout.runtime(root):
+        from tools import resources
+        resources.configure(root, command)
+        return resources.compose(root, command)
     env_path = root / ".env"
     env_text = env_path.read_text(encoding="utf-8")
     if not any(line.startswith("STOLAS_PROJECT_NAME=") for line in env_text.splitlines()):
@@ -589,6 +599,14 @@ def first_test(compose, root):
         raise RuntimeError("CLI-тест не запущен: проверьте конфигурацию, блокировку и cooldown; повтор: docker compose exec stolas python3 -m agent run")
     data = json.loads(result.stdout)
     ui().line("Результат теста: " + {"ok": "успешно", "low_confirmed": "подтверждено снижение скорости", "route_blocked": "измерение остановлено проверкой канала", "unavailable": "серверы недоступны"}.get(data["status"], data["status"]))
+    if "mixed_routing" in data.get("warnings", []):
+        ui().line()
+        ui().result("сервисы определения IP показали разные адреса.", "warning")
+        ui().line()
+        ui().line("Возможна раздельная маршрутизация.")
+        ui().line("Проверьте маршрут к серверам измерения.")
+        ui().line()
+        ui().line("Измерение продолжено; внешний маршрут к серверу не подтверждён.")
     reasons = {error.get("reason") for error in data.get("errors", [])} | {error for attempt in data.get("attempts", []) for error in attempt.get("errors", [])}
     explanations = {"route_unconfigured": "Укажите разрешённый внешний IP основного подключения.",
                     "route_public_ip_mismatch": "Внешний IP не совпал с разрешёнными адресами. Проверьте подключение и настройки канала.",
@@ -634,7 +652,7 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
     plan = {"config": existing, "api": read_api(root), "completed": []} if recover else collect_plan(root, existing, facts, reuse)
     validate_plan(plan)
     cfg, api = plan["config"], plan["api"]
-    progress_path = root / ".stolas-progress.json"
+    progress_path = layout.state_path(root, ".stolas-progress.json")
     previous_progress = json.loads(progress_path.read_text()) if progress_path.exists() else {}
     fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()
     first_status = previous_progress.get("first_status")
@@ -653,10 +671,10 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
     if not reuse:
         commit_configuration(root, cfg, api)
     checkpoint("configured")
-    print("\nНастройки сохранены. Старые версии файлов сохранены рядом как .bak-*.")
+    ui().result("настройки сохранены")
     if configure_only:
         print("Настройки сохранены. Агент и тест скорости не запускались.")
-        (root / ".stolas-draft.json").unlink()
+        layout.state_path(root, ".stolas-draft.json").unlink()
         return 0
     ui().stage("Установка и проверка", 4)
     compose = docker_command(root)
@@ -665,11 +683,16 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
     run(compose + ["build", "stolas"], root)
     ui().result("образ собран")
     run(compose + ["run", "--rm", "--no-deps", "stolas", "validate"], root)
+    if layout.runtime(root):
+        from tools import resources
+        resources.activate(root, compose[:compose.index("compose")])
     run(compose + ["up", "-d", "--force-recreate", "--wait", "--wait-timeout", "90", "stolas"], root)
     checkpoint("deployed")
     host = api["STOLAS_LISTEN"]
     request_json(f"http://{host}:{api['STOLAS_PORT']}", "/healthz", api["STOLAS_API_TOKEN"])
     ui().result("API отвечает, авторизация проверена")
+    if layout.runtime(root):
+        resources.complete(root, compose[:compose.index("compose")])
     if reuse:
         result = None
         print("Сервис обновлён; конфигурация и история сохранены. Дополнительный нагрузочный тест не запускался.")
@@ -684,10 +707,10 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
     ui().result("Stolas Core запущен")
     ui().line("API: http://" + api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"])
     ui().line("Токен API сохранён в .env; история — в Docker volume.")
-    ui().line("Результаты: docker compose exec stolas python3 -m agent history")
-    ui().line("Логи: docker compose logs --tail 50 stolas")
+    ui().line("Результаты: ./stolas history")
+    ui().line("Логи: ./stolas logs")
     checkpoint("complete", first_status=result["status"] if result else None)
-    (root / ".stolas-draft.json").unlink()
+    layout.state_path(root, ".stolas-draft.json").unlink()
     if result and result["status"] in ("route_blocked", "unavailable"):
         ui().result("Агент установлен, но измерение не получено. Исправьте причину выше и повторите тест.", "warning")
         return 2
@@ -700,7 +723,8 @@ def commit_configuration(root, cfg, api):
         raise ValueError("Отказ записи через symlink")
     originals = {path: (path.read_bytes(), path.stat().st_mode & 0o777) if path.exists() else None for path in paths}
     previous_env = originals[paths[1]][0].decode() if originals[paths[1]] else ""
-    project_lines = [line for line in previous_env.splitlines() if line.startswith("STOLAS_PROJECT_NAME=")]
+    resource_keys = {"STOLAS_PROJECT_NAME", "STOLAS_CONTAINER_NAME", "STOLAS_INSTANCE_ID", "STOLAS_DATA_VOLUME"}
+    project_lines = [line for line in previous_env.splitlines() if line.partition("=")[0] in resource_keys]
     try:
         write_private(paths[0], json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
         os.chmod(paths[0], 0o644)

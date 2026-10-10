@@ -33,7 +33,8 @@ if os.environ.get("STOLAS_TEST_DOWNLOAD_FAIL"):
 destination = sys.argv[sys.argv.index("--output") + 1]
 if sys.argv[-1].endswith("/SHA256SUMS"):
     digest = os.environ.get("STOLAS_TEST_BAD_HASH") or hashlib.sha256(pathlib.Path(os.environ["STOLAS_TEST_ARCHIVE"]).read_bytes()).hexdigest()
-    pathlib.Path(destination).write_text(digest + "  stolas-v0.4.0.tar.gz\\n")
+    version = sys.argv[-1].split('/')[-2]
+    pathlib.Path(destination).write_text(digest + "  stolas-" + version + ".tar.gz\\n")
 else:
     shutil.copyfile(os.environ["STOLAS_TEST_ARCHIVE"], destination)
 ''')
@@ -51,6 +52,9 @@ else:
             "tools/deploy.py": (ROOT / "tools/deploy.py").read_bytes(),
             "tools/environment.py": (ROOT / "tools/environment.py").read_bytes(),
             "tools/terminal.py": (ROOT / "tools/terminal.py").read_bytes(),
+            "tools/layout.py": (ROOT / "tools/layout.py").read_bytes(),
+            "tools/resources.py": (ROOT / "tools/resources.py").read_bytes(),
+            "stolas": (ROOT / "stolas").read_bytes(),
             "tools/install.py": b'''import pathlib, sys, os
 if '--diagnose' in sys.argv:
     print('read-only diagnostics')
@@ -73,6 +77,9 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
             "config/example.json": b"{}\n",
         }
         if real:
+            for path in (ROOT / "tools").iterdir():
+                if path.is_file() and path.suffix in (".py", ".json", ".sh"):
+                    files[path.relative_to(ROOT).as_posix()] = path.read_bytes()
             for name in ("install.sh", "tools/install.py", "tools/deploy.py", "tools/environment.py", "tools/terminal.py", "n8n/stolas.json", "compose.yaml", "config/example.json"):
                 files[name] = (ROOT / name).read_bytes()
             for path in (ROOT / "agent").glob("*.py"):
@@ -186,7 +193,7 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
         self.env["STOLAS_TEST_WIZARD_EXIT"] = "2"
         code, output = self.pipeline()
         self.assertEqual(code, 2, output)
-        self.assertTrue((self.target / "install.sh").exists())
+        self.assertTrue((self.target / "stolas").exists())
         self.assert_diagnostics()
 
     def test_existing_empty_directory_is_accepted(self):
@@ -214,7 +221,7 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
         for action in ("reconfigure", "update"):
             code, output = self.pipeline(answers=action + "\nsecond\n")
             self.assertEqual(code, 0, output)
-            self.assertIn("Stolas уже установлен", output)
+            self.assertIn("Управление установкой", output)
             self.assertEqual((self.target / "wizard-answer").read_text(), "second")
 
     def test_bad_release_checksum_never_extracts_or_runs_wizard(self):
@@ -245,7 +252,7 @@ exit "${STOLAS_TEST_WIZARD_EXIT:-0}"
         result = subprocess.run(["sh", str(BOOTSTRAP), "--dir", str(target), "--diagnose"], cwd=self.root, env=self.env,
                                 capture_output=True, text=True, start_new_session=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("read-only diagnostics", result.stdout)
+        self.assertIn('"installation"', result.stdout)
         self.assertFalse(target.parent.exists())
 
     def test_truncated_bootstrap_body_never_starts_installation(self):

@@ -10,6 +10,7 @@ import shutil
 import socket
 import subprocess
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from tools import layout
 
 
 # Select fields at the Docker API boundary; Config.Env never leaves the daemon.
@@ -39,7 +40,7 @@ def discover(root):
              "addresses": [], "n8n": [], "stolas": [], "networks": {}, "warnings": [],
              "docker": {"available": False, "command": [], "reason": "Docker не установлен"},
              "installation": {"directory": str(root), "config": (root / "config/local.json").is_file(),
-                              "env": (root / ".env").is_file(), "draft": (root / ".stolas-draft.json").is_file()}}
+                              "env": (root / ".env").is_file(), "draft": layout.state_path(root, ".stolas-draft.json").is_file()}}
     zone = os.environ.get("TZ")
     try:
         if not zone and Path("/etc/timezone").is_file():
@@ -66,13 +67,15 @@ def discover(root):
     else:
         facts["warnings"].append("Нет утилиты ip: адреса интерфейсов не обнаружены; установите iproute2 для автоматического выбора сети")
     for filename, key in ((".stolas-managed.json", "ref"), (".stolas-install-status.json", "stage")):
-        path = root / filename
+        path = layout.state_path(root, filename)
+        if layout.runtime(root) and filename == ".stolas-install-status.json":
+            path = root / ".stolas/state/status.json"
         if path.is_file() and not path.is_symlink():
             try:
                 facts["installation"][key] = json.loads(path.read_text()).get(key, "unknown")
             except (ValueError, OSError):
                 facts["warnings"].append("Не читается служебное состояние " + filename)
-    progress = root / ".stolas-progress.json"
+    progress = layout.state_path(root, ".stolas-progress.json")
     if progress.is_file() and not progress.is_symlink():
         try:
             facts["installation"]["wizard_stage"] = json.loads(progress.read_text()).get("stage")

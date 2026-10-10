@@ -14,7 +14,7 @@ import urllib.parse
 from tools.install import (ask, choice, select_named, propose_port, url, matching,
     integer, timezone, https_url, read_api, clean_env, write_private, request_json,
     docker_command, run, Back, Cancel, Rescan)
-from tools import environment
+from tools import environment, layout
 from tools.terminal import ui
 from tools.deploy import install_lock
 
@@ -121,7 +121,7 @@ def credential_choice(items, kind):
     if not matching_items:
         return None
     names = [c["name"] + " · ID " + c["id"] + (" · " + ", ".join(p["name"] for p in c["projects"]) if c["projects"] else "") for c in matching_items]
-    return select_named("Telegram credential" if kind == "telegramApi" else "Credential доступа к Stolas", matching_items, names)
+    return select_named("Telegram credential" if kind == "telegramApi" else "Credential доступа к Stolas", matching_items, names, automatic=kind == "telegramApi")
 
 
 
@@ -146,7 +146,7 @@ def validate_discovered_endpoint(plan, facts):
 
 
 def workflow(root, options):
-    data = json.loads((root / "n8n/stolas.json").read_text(encoding="utf-8"))
+    data = json.loads((layout.code_root(root) / "n8n/stolas.json").read_text(encoding="utf-8"))
     data["name"] = f"Stolas - {options['hours']}h monitoring"
     data["settings"]["timezone"] = options["timezone"]
     nodes = {n["name"]: n for n in data["nodes"]}
@@ -184,12 +184,12 @@ def check_connection(root, options, api, compose):
 
 
 def connect_n8n(root, options, api, data):
-    local = root / "n8n/local.json"
+    local = layout.integration_path(root, "local.json")
     write_private(local, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
     if options["mode"] == "export":
         ui().result("файл для импорта сохранён: " + str(local))
         return True
-    state_path = root / "n8n/install-state.json"
+    state_path = layout.integration_path(root, "install-state.json")
     state = json.loads(state_path.read_text()) if state_path.exists() else {"url": options["url"], "credentials": []}
     if state.get("url") != options["url"]:
         raise ValueError("Сохранена другая интеграция. Используйте ручной импорт")
@@ -255,7 +255,7 @@ def connect_n8n(root, options, api, data):
 
 def integrate(root, mode=None):
     original = read_api(root)
-    settings = root / "n8n/settings.json"
+    settings = layout.integration_path(root, "settings.json")
     previous = json.loads(settings.read_text()) if settings.exists() else {}
     previous = {k: v for k, v in previous.items() if k not in ("key", "bot_token")}
     facts = environment.discover(root)
@@ -282,8 +282,12 @@ def integrate(root, mode=None):
                     raise Cancel()
                 validate_discovered_endpoint({"api": api, "n8n": options}, environment.discover(root))
                 data = workflow(root, options)
-                write_private(root / "n8n/local.json", json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-                compose = docker_command(root)
+                write_private(layout.integration_path(root, "local.json"), json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+                if layout.runtime(root):
+                    from tools import resources
+                    compose = resources.compose(root, resources.command(root))
+                else:
+                    compose = docker_command(root)
                 env_path = root / ".env"
                 with env_path.open(encoding="utf-8", newline="") as file:
                     old_env = file.read()

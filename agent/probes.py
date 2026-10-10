@@ -107,7 +107,8 @@ def _guard(cfg, address, timeout=None):
     if not r["expected_public_cidrs"]:
         raise ProbeError("route_unconfigured")
     deadline = time.monotonic() + (timeout if timeout is not None else r["verification_timeout"])
-    details = {"verified": False, "verification_status": "unavailable", "sources": []}
+    details = {"verified": False, "egress_verified": False, "allow_measurement": False,
+               "verification_status": "unavailable", "sources": []}
     try:
         cmd = ["ip", "-j", "-4", "route", "get", address]
         if cfg["bind_address"]:
@@ -131,15 +132,20 @@ def _guard(cfg, address, timeout=None):
                 witness.update(status="ok", ip=value)
             except ProbeError as error:
                 witness.update(status="error", reason=error.kind)
-        if len(set(observations)) > 1:
-            details["verification_status"] = "conflict"
-            raise ProbeError("route_verification_conflict", details)
-        if observations and not any(ipaddress.IPv4Address(observations[0]) in ipaddress.IPv4Network(n) for n in r["expected_public_cidrs"]):
+        allowed = [value for value in observations if any(ipaddress.IPv4Address(value) in ipaddress.IPv4Network(n) for n in r["expected_public_cidrs"])]
+        details.update(interface=route.get("dev"), gateway=route.get("gateway"), method="local_route_and_https_sources")
+        if observations and not allowed:
             details["verification_status"] = "mismatch"
             raise ProbeError("route_public_ip_mismatch", details)
+        if len(set(observations)) > 1 and allowed:
+            # HTTPS destinations may use different WANs. A LAN gateway is not
+            # evidence of the external egress chosen for the iperf destination.
+            return {**details, "verification_status": "mixed", "allow_measurement": True,
+                    "warning": "mixed_routing", "public_ip": allowed[0]}
         if len(observations) < r["min_confirmations"]:
             raise ProbeError("route_verification_unavailable", details)
-        return {**details, "verified": True, "verification_status": "verified", "public_ip": observations[0], "method": "route_and_https_egress", "interface": route.get("dev")}
+        return {**details, "verified": True, "allow_measurement": True,
+                "verification_status": "verified", "public_ip": observations[0]}
     except ProbeError as error:
         if not error.details:
             error.details = {**details, "verification_status": "mismatch" if error.kind.endswith("_mismatch") else "unavailable"}

@@ -1,8 +1,12 @@
 name: ${STOLAS_PROJECT_NAME:-stolas}
 services:
   stolas:
-    build: .
-    image: ${STOLAS_PROJECT_NAME:-stolas}:0.4.0
+    build:
+      context: ${STOLAS_BUILD_CONTEXT:-./.stolas/build}
+      args:
+        STOLAS_INSTANCE_ID: ${STOLAS_INSTANCE_ID:-development}
+    container_name: ${STOLAS_CONTAINER_NAME:-stolas}
+    image: ${STOLAS_PROJECT_NAME:-stolas}:0.5.0
     restart: unless-stopped
     # Linux only: route checks must see the host's routes, not a bridge gateway.
     network_mode: host
@@ -16,6 +20,7 @@ services:
       STOLAS_LOG_FORMAT: ${STOLAS_LOG_FORMAT:-json}
     labels:
       org.stolas.service: core
+      org.stolas.instance: ${STOLAS_INSTANCE_ID:-development}
     volumes:
       - ./config/local.json:/app/config/local.json:ro
       - stolas-data:/data
@@ -35,3 +40,5 @@ services:
         max-file: '3'
 volumes:
   stolas-data:
+    external: true
+    name: ${STOLAS_DATA_VOLUME:-stolas_stolas-data}

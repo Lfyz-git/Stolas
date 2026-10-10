@@ -251,9 +251,9 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_diagnosis_does_not_create_target_or_lock(self):
         target = self.root / "absent"
-        with patch.object(deploy.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run, patch("sys.argv", ["deploy", "--target", str(target), "--diagnose"]):
+        with patch.object(install.environment, "discover", return_value={"installation": {"config": False}}) as discover, patch("sys.argv", ["deploy", "--target", str(target), "--diagnose"]):
             self.assertEqual(deploy.main(), 0)
-        self.assertIn("--diagnose", run.call_args.args[0])
+        discover.assert_called_once_with(target)
         self.assertFalse(target.exists())
 
     def test_gateway_change_after_rescan_blocks_stale_endpoint(self):

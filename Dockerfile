@@ -9,6 +9,8 @@ RUN sh /tmp/install-apk.sh && rm /tmp/install-apk.sh /tmp/apk.lock.json \
     && addgroup -g 10001 stolas && adduser -D -u 10001 -G stolas stolas \
     && mkdir /data && chown stolas:stolas /data
 WORKDIR /app
+ARG STOLAS_INSTANCE_ID=development
+LABEL org.stolas.instance=$STOLAS_INSTANCE_ID
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 STOLAS_DATA_DIR=/data
 COPY agent /app/agent
 COPY config/example.json /app/config/example.json
