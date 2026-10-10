@@ -104,7 +104,7 @@ class EntrypointTests(unittest.TestCase):
         parent = (self.root / ".stolas/state").stat()
         with patch.object(entrypoints.os, "geteuid", return_value=0), patch.object(entrypoints.os, "chown") as chown:
             self.install()
-        chown.assert_called_once_with(entrypoints.state_path(self.root), parent.st_uid, parent.st_gid)
+        self.assertTrue(any(c.args[1:] == (parent.st_uid, parent.st_gid) for c in chown.call_args_list))
 
     def test_user_without_sudo_manual_path_decline_and_explicit_system_confirmation(self):
         userbin = self.home / ".local/bin"

@@ -41,6 +41,7 @@ def discover(root):
              "docker": {"available": False, "command": [], "reason": "Docker не установлен", "access_status": "missing", "requires_sudo": False},
              "installation": {"directory": str(root), "config": (root / "config/local.json").is_file(),
                               "env": (root / ".env").is_file(), "draft": layout.state_path(root, ".stolas-draft.json").is_file()}}
+    facts["permissions"] = layout.access_report(root)
     zone = os.environ.get("TZ")
     try:
         if not zone and Path("/etc/timezone").is_file():
@@ -70,13 +71,13 @@ def discover(root):
         path = layout.state_path(root, filename)
         if layout.runtime(root) and filename == ".stolas-install-status.json":
             path = root / ".stolas/state/status.json"
-        if path.is_file() and not path.is_symlink():
+        if os.access(path, os.R_OK) and path.is_file() and not path.is_symlink():
             try:
                 facts["installation"][key] = json.loads(path.read_text()).get(key, "unknown")
             except (ValueError, OSError):
                 facts["warnings"].append("Не читается служебное состояние " + filename)
     progress = layout.state_path(root, ".stolas-progress.json")
-    if progress.is_file() and not progress.is_symlink():
+    if os.access(progress, os.R_OK) and progress.is_file() and not progress.is_symlink():
         try:
             facts["installation"]["wizard_stage"] = json.loads(progress.read_text()).get("stage")
         except (ValueError, OSError):

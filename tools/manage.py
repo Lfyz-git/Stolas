@@ -12,7 +12,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools import entrypoints, environment, layout, resources
+from tools import diagnostics, entrypoints, environment, layout, resources
 from tools.deploy import atomic_json, install_lock, legacy_files, prune_empty, read_json, replace_file, runtime_files, safe_path
 from tools.install import Back, Cancel, Rescan, ask, choice, clean_env, first_test, LABELS
 from tools.terminal import ui
@@ -106,9 +106,6 @@ def preserve_legacy_manager(root):
     for name, source in files.items():
         replace_file(source, layout.bounded(root, name))
     os.chmod(root / "stolas", 0o755)
-    for path in (root / ".stolas").rglob("*"):
-        if path.is_dir() and not path.is_symlink():
-            os.chmod(path, 0o700)
     known = read_json(ROOT / "tools/legacy-v0.4.0.json")
     return legacy & (set(known) - {"compose.yaml"})
 
@@ -255,6 +252,7 @@ def main():
         if args.action == "uninstall":
             return uninstall(root, args.purge)
         if args.action == "update":
+            layout.preflight(root)
             return update(root, args.version)
         if args.action in ("configure", "rollback"):
             from tools.deploy import deploy
@@ -274,6 +272,7 @@ def main():
                 if facts["docker"].get("access_warning"):
                     ui().result(facts["docker"]["access_warning"], "warning")
                 ui().line("Настройки: " + ("сохранены" if facts["installation"]["config"] else "не завершены"))
+                diagnostics.permissions(facts)
             return 0
         docker = resources.command(root)
         compose = resources.compose(root, docker)
@@ -291,8 +290,8 @@ def main():
     except (ValueError, RuntimeError) as error:
         ui().result(str(error), "error")
         return 1
-    except (OSError, KeyError, subprocess.SubprocessError):
-        ui().result("Действие не завершено. Проверьте ./stolas diagnose и повторите команду", "error")
+    except (OSError, KeyError, subprocess.SubprocessError) as error:
+        diagnostics.report(args.root, error)
         return 1
 
 

@@ -38,6 +38,7 @@ def atomic_json(path, data):
             json.dump(data, file, ensure_ascii=False, indent=2)
             file.flush()
             os.fsync(file.fileno())
+        layout.keep_owner(temporary, layout.owner_for(path))
         os.replace(temporary, path)
     finally:
         if temporary.exists():
@@ -48,6 +49,7 @@ def atomic_json(path, data):
 def install_lock(target):
     target = safe_path(target)
     target.mkdir(parents=True, exist_ok=True)
+    layout.preflight(target)
     layout.initialize(target)
     paths = [layout.bounded(target, ".stolas/state/install.lock")]
     if (target / ".stolas-install.lock").exists():
@@ -57,6 +59,7 @@ def install_lock(target):
         for path in paths:
             fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
             descriptors.append(fd)
+            layout.keep_owner(path)
             if os.name == "nt":
                 import msvcrt
                 os.write(fd, b"0")
@@ -66,7 +69,7 @@ def install_lock(target):
                 import fcntl
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         yield
-    except (BlockingIOError, PermissionError):
+    except BlockingIOError:
         raise RuntimeError("Другой установщик уже работает с этим каталогом или нет прав на запись") from None
     finally:
         for fd in reversed(descriptors):
@@ -98,10 +101,11 @@ def checked_file(root, name):
 
 
 def replace_file(source, destination):
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    layout.directory(destination.parent)
     temporary = destination.with_name(destination.name + ".stolas-tmp-" + uuid.uuid4().hex)
     try:
         shutil.copy2(source, temporary)
+        layout.keep_owner(temporary, layout.owner_for(destination))
         os.replace(temporary, destination)
     finally:
         if temporary.exists():
@@ -122,7 +126,7 @@ def runtime_files(source):
             result[".stolas/build/" + name] = source / name
         if name in ("Dockerfile", ".dockerignore", "LICENSE", "config/example.json", "config/apk.lock.json", "config/apk-aarch64.lock", "config/apk-x86_64.lock", "tools/install-apk.sh"):
             result[".stolas/build/" + name] = source / name
-        installer_names = {"tools/deploy.py", "tools/install.py", "tools/manage.py", "tools/resources.py", "tools/layout.py", "tools/environment.py", "tools/terminal.py", "tools/integrate.py", "tools/entrypoints.py", "tools/legacy-v0.4.0.json"}
+        installer_names = {"tools/deploy.py", "tools/install.py", "tools/manage.py", "tools/resources.py", "tools/layout.py", "tools/environment.py", "tools/terminal.py", "tools/integrate.py", "tools/entrypoints.py", "tools/diagnostics.py", "tools/legacy-v0.4.0.json"}
         if name in installer_names or name in ("tools/install-docker.sh", "agent/config.py", "agent/__init__.py", "config/example.json", "n8n/stolas.json", "LICENSE"):
             result[".stolas/installer/" + name] = source / name
         if name in ("compose.yaml", "stolas"):
@@ -166,6 +170,7 @@ def prune_empty(target, names):
 
 
 def stage_sources(source, target, ref, digest):
+    layout.preflight(target)
     layout.initialize(target)
     files = runtime_files(source)
     manifest_path = layout.bounded(target, ".stolas/state/managed.json")
@@ -187,8 +192,9 @@ def stage_sources(source, target, ref, digest):
         if path.is_file():
             state["modes"][name] = path.stat().st_mode & 0o777
             destination = backup / "files" / name
-            destination.parent.mkdir(parents=True, exist_ok=True)
+            layout.directory(destination.parent)
             shutil.copy2(path, destination)
+            layout.keep_owner(destination)
             os.chmod(destination, 0o600)
         if name in files:
             state["new_hashes"][name] = hashlib.sha256(files[name].read_bytes()).hexdigest()
@@ -213,9 +219,6 @@ def stage_sources(source, target, ref, digest):
                 replace_file(old, destination)
                 os.chmod(destination, 0o600)
         atomic_json(manifest_path, {"files": sorted(files), "hashes": state["new_hashes"], "ref": ref, "archive_sha256": digest})
-        for directory in (target / ".stolas").rglob("*"):
-            if directory.is_dir() and not directory.is_symlink():
-                os.chmod(directory, 0o700)
         atomic_json(journal, {"phase": "installed", "backup": backup.relative_to(target).as_posix(), "configured": state["configured"]})
     except BaseException:
         restore(target, backup)
@@ -391,7 +394,11 @@ def main():
         return deploy(ROOT, args.target, args.source_ref, args.source_sha256, args.action, args.configure_only)
     except (ValueError, RuntimeError, OSError, KeyboardInterrupt, EOFError) as error:
         from tools.terminal import ui
-        ui().result(str(error) if not isinstance(error, (KeyboardInterrupt, EOFError)) else "Ввод прерван. Повторите команду для продолжения", "error")
+        if isinstance(error, OSError):
+            from tools.diagnostics import report
+            report(args.target, error)
+        else:
+            ui().result(str(error) if not isinstance(error, (KeyboardInterrupt, EOFError)) else "Ввод прерван. Повторите команду для продолжения", "error")
         return 130 if isinstance(error, (KeyboardInterrupt, EOFError)) else 1
 
 

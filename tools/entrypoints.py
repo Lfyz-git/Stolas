@@ -22,11 +22,7 @@ def write_state(root, record):
     from tools.deploy import atomic_json
     path = state_path(root)
     atomic_json(path, record)
-    # sudo may create the system wrapper for a user-owned installation. Keep
-    # its private metadata readable by that installation's owner afterwards.
-    if hasattr(os, "chown") and getattr(os, "geteuid", lambda: -1)() == 0:
-        parent = path.parent.stat()
-        os.chown(path, parent.st_uid, parent.st_gid)
+    # atomic_json preserves the installation owner, including after sudo.
 
 
 def content(root):

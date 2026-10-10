@@ -218,7 +218,7 @@ def write_private(path, content):
     """Atomic replace, owner-only permissions, dated backup when changing a file."""
     if any(item.is_symlink() for item in (path, *path.parents)):
         raise ValueError("Отказ записи через symlink")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    layout.directory(path.parent)
     if path.is_symlink():
         raise ValueError(f"Отказ записи через symlink: {path}")
     runtime_root = next((parent for parent in path.parents if layout.runtime(parent)), None)
@@ -232,10 +232,12 @@ def write_private(path, content):
         with backup.open("x", encoding="utf-8", newline="\n") as file:
             os.chmod(backup, 0o600)
             file.write(path.read_text(encoding="utf-8"))
+        layout.keep_owner(backup, layout.owner_for(path))
     fd, name = tempfile.mkstemp(prefix=".stolas-", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as file:
             file.write(content)
+        layout.keep_owner(Path(name), layout.owner_for(path))
         os.replace(name, path)
     finally:
         if os.path.exists(name):
@@ -649,6 +651,7 @@ def request_json(base, path, token, body=None, n8n=False):
 
 
 def install(root=ROOT, configure_only=False, reuse=False, recover=False):
+    layout.preflight(root)
     current = root / "config/local.json"
     existing = validated(current) if current.exists() else copy.deepcopy(DEFAULT)
     facts = environment.discover(root)
@@ -747,6 +750,7 @@ def commit_configuration(root, cfg, api):
                     with os.fdopen(fd, "wb") as file:
                         file.write(original[0])
                     os.chmod(name, original[1])
+                    layout.keep_owner(Path(name), layout.owner_for(path))
                     os.replace(name, path)
                 finally:
                     if os.path.exists(name):
@@ -778,7 +782,11 @@ def main():
         ui().result("Установка прервана. Повторите команду для продолжения.", "warning")
         return 130
     except (ValueError, RuntimeError, OSError, KeyError) as error:
-        ui().result(str(error), "error")
+        if isinstance(error, (OSError, KeyError)):
+            from tools.diagnostics import report
+            report(args.root, error)
+        else:
+            ui().result(str(error), "error")
         ui().line("Исправьте причину и повторите команду.")
         return 1
 
