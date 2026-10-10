@@ -3,10 +3,10 @@
 ## Первый запуск
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.5.0/bootstrap.sh | sh -s -- --dir /opt/stolas
+curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.5.0/bootstrap.sh | sh
 ```
 
-Запускайте от пользователя с доступом к локальному Docker и каталогу установки.
+По умолчанию мастер предложит `~/stolas`, доступный обычному пользователю. Запускайте от пользователя с доступом к локальному Docker и каталогу установки.
 Если каталога ещё нет, администратор может создать его:
 
 ```sh
