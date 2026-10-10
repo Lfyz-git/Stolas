@@ -6,7 +6,7 @@ services:
       args:
         STOLAS_INSTANCE_ID: ${STOLAS_INSTANCE_ID:-development}
     container_name: ${STOLAS_CONTAINER_NAME:-stolas}
-    image: ${STOLAS_PROJECT_NAME:-stolas}:0.5.0
+    image: ${STOLAS_PROJECT_NAME:-stolas}:0.5.1
     restart: unless-stopped
     # Linux only: route checks must see the host's routes, not a bridge gateway.
     network_mode: host

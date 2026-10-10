@@ -15,7 +15,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 HAS_TOOLS = (ROOT / "tools/environment.py").exists()
 if HAS_TOOLS:
-    from tools import environment as env, install, deploy, integrate
+    from tools import environment as env, install, deploy, integrate, manage
 
 
 def fixtures(root):
@@ -44,6 +44,7 @@ class DiscoveryTests(unittest.TestCase):
         self.redirect.__enter__()
         self.addCleanup(self.redirect.__exit__, None, None, None)
         self.info_error = ""
+        self.sudo_ok = False
         self.context = "unix:///var/run/docker.sock"
 
     def command(self, args):
@@ -52,7 +53,7 @@ class DiscoveryTests(unittest.TestCase):
         if args[0] == "ip":
             output = json.dumps(self.addresses)
         elif "info" in args:
-            output, error = "linux x86_64 28.0.0", self.info_error
+            output, error = "linux x86_64 28.0.0", "" if args[0] == "sudo" and self.sudo_ok else self.info_error
         elif "context" in args:
             output = self.context
         elif "compose" in args:
@@ -139,6 +140,20 @@ class DiscoveryTests(unittest.TestCase):
         facts = self.discover()
         self.assertFalse(facts["docker"]["available"])
         self.assertIn("удалённый", facts["docker"]["reason"])
+
+    def test_permission_warning_survives_successful_sudo_and_is_shown_before_apply_and_in_diagnose(self):
+        self.info_error, self.sudo_ok = "permission denied on Docker socket", True
+        facts = self.discover(tools=("docker", "ip", "sudo"))
+        self.assertTrue(facts["docker"]["available"])
+        self.assertTrue(facts["docker"]["requires_sudo"])
+        self.assertEqual(facts["docker"]["access_status"], "sudo")
+        self.assertEqual(facts["docker"]["command"], ["sudo", "-n", "docker"])
+        install.print_facts(facts)
+        with patch.object(manage.environment, "discover", return_value=facts), patch("sys.argv", ["stolas", "--root", str(self.root), "diagnose"]):
+            self.assertEqual(manage.main(), 0)
+        for phrase in ("текущая учётная запись", "полномочия root", "новый вход в сессию"):
+            self.assertEqual(" ".join(self.output.getvalue().split()).count(phrase), 2)
+        self.assertFalse(any(part in ("usermod", "chmod", "chown", "install", "create") for command in self.commands for part in command))
 
     def test_missing_gateway_gateway_not_local_and_ipam_conflict(self):
         attachment = self.container["networks"]["automation_default"]

@@ -403,6 +403,8 @@ def print_facts(facts):
         terminal.line("Docker будет установлен после подтверждения.")
     else:
         terminal.result(facts["docker"]["reason"], "warning")
+    if facts["docker"].get("access_warning"):
+        terminal.result(facts["docker"]["access_warning"], "warning")
     if facts["installation"].get("config"):
         terminal.result("найдены сохранённые настройки")
 
@@ -556,7 +558,7 @@ def docker_command(root):
     if not shutil.which("docker"):
         print("Docker отсутствует. Будут установлены Docker Engine и Compose из официального apt-репозитория.")
         prefix = [] if os.geteuid() == 0 else ["sudo"]
-        run(prefix + ["sh", str(root / "tools/install-docker.sh")], root)
+        run(prefix + ["sh", str(layout.code_root(root) / "tools/install-docker.sh")], root)
     if run(command + ["info"], root, capture=True, check=False).returncode:
         if os.geteuid() != 0 and shutil.which("sudo"):
             command = ["sudo", "docker"]
@@ -713,6 +715,9 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
     ui().line("Логи: ./stolas logs")
     checkpoint("complete", first_status=result["status"] if result else None)
     layout.state_path(root, ".stolas-draft.json").unlink()
+    if layout.runtime(root):
+        from tools import entrypoints
+        entrypoints.offer(root)
     if result and result["status"] in ("route_blocked", "unavailable"):
         ui().result("Агент установлен, но измерение не получено. Исправьте причину выше и повторите тест.", "warning")
         return 2

@@ -12,7 +12,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools import environment, layout, resources
+from tools import entrypoints, environment, layout, resources
 from tools.deploy import atomic_json, install_lock, legacy_files, prune_empty, read_json, replace_file, runtime_files, safe_path
 from tools.install import Back, Cancel, Rescan, ask, choice, clean_env, first_test, LABELS
 from tools.terminal import ui
@@ -62,7 +62,7 @@ def managed_paths(root):
     if not layout.runtime(root):
         names |= legacy_files(root)
     names |= {".env", "config/local.json", ".stolas-install.lock"}
-    for name in ("managed.json", "transaction.json", "resources.json", "handover.json", "identity.json", "draft.json", "progress.json", "status.json", "install.lock"):
+    for name in ("managed.json", "transaction.json", "resources.json", "handover.json", "identity.json", "draft.json", "progress.json", "status.json", "install.lock", "entrypoint.json"):
         names.add(".stolas/state/" + name)
     for name in ("local.json", "settings.json", "install-state.json"):
         names.add(".stolas/integrations/n8n/" + name)
@@ -95,7 +95,7 @@ def preserve_legacy_manager(root):
     files = {name: path for name, path in runtime_files(ROOT).items()
              if name == "stolas" or name.startswith(".stolas/installer/")}
     if "stolas" not in files:
-        raise RuntimeError("Не найдена команда управления. Запустите удаление из полного архива v0.5.0")
+        raise RuntimeError("Не найдена команда управления. Запустите удаление из полного архива v0.5.1")
     previous = read_json(root / ".stolas/state/managed.json")
     for name in files:
         path = layout.bounded(root, name)
@@ -171,6 +171,7 @@ def uninstall(root, purge=False):
                 terminal.result("Общий образ сохранён: " + ref, "warning")
                 continue
             resources.call(root, docker, "image", "rm", ref)
+        entrypoints.remove(root)
         remove = names if purge else {name for name in names if name.startswith(".stolas/build/")} | retired
         for name in sorted(remove):
             path = layout.bounded(root, name)
@@ -198,7 +199,7 @@ def update(root, version=None):
         with urllib.request.urlopen(req, timeout=20) as response:
             version = json.load(response)["tag_name"]
     if not re.fullmatch(r"v\d+\.\d+\.\d+", version):
-        raise ValueError("Версия должна иметь вид v0.5.0")
+        raise ValueError("Версия должна иметь вид v0.5.1")
     terminal.line("Версия: " + version)
     with tempfile.TemporaryDirectory(prefix="stolas-update-") as directory:
         path = Path(directory) / "bootstrap.sh"
@@ -217,7 +218,7 @@ def main():
     sub.add_parser("logs", help="смотреть логи")
     sub.add_parser("configure", help="изменить настройки")
     upgrade = sub.add_parser("update", help="обновить с сохранением истории")
-    upgrade.add_argument("--version", help="версия релиза, например v0.5.0")
+    upgrade.add_argument("--version", help="версия релиза, например v0.5.1")
     sub.add_parser("rollback", help="вернуть предыдущую версию")
     diagnose = sub.add_parser("diagnose", help="проверить окружение")
     diagnose.add_argument("--json", action="store_true", help="JSON без секретов")
@@ -226,12 +227,29 @@ def main():
     integration.add_argument("--mode", choices=("export", "api"))
     removal = sub.add_parser("uninstall", help="удалить приложение")
     removal.add_argument("--purge", action="store_true", help="включая историю и настройки; требуется подтверждение")
+    command = sub.add_parser("command", help="настроить необязательную команду в PATH")
+    command.add_argument("operation", choices=("install", "remove", "status"))
+    command.add_argument("--scope", choices=("user", "system"), help="пользовательский или общий каталог")
+    command.add_argument("--name", help="имя команды для этого экземпляра")
     sub.add_parser("help", help="показать команды")
     args = parser.parse_args()
     try:
         root = safe_path(args.root)
         if args.action in (None, "help"):
             parser.print_help()
+            return 0
+        if args.action == "command":
+            if args.operation == "status":
+                record = entrypoints.read(root)
+                ui().line(record.get("path", "Команда в PATH не настроена"))
+                if record.get("path"):
+                    ui().result("Принадлежность подтверждена" if entrypoints.owned(root, record) else "Команда изменена или отсутствует", "success" if entrypoints.owned(root, record) else "warning")
+            else:
+                with install_lock(root):
+                    if args.operation == "remove":
+                        entrypoints.remove(root)
+                    else:
+                        entrypoints.configure(root, args.scope, args.name)
             return 0
         if args.action == "uninstall":
             return uninstall(root, args.purge)
@@ -252,6 +270,8 @@ def main():
                 ui().line("Каталог: " + str(root))
                 ui().line("Версия: " + facts["installation"].get("ref", "не определена"))
                 ui().result("Docker доступен" if facts["docker"]["available"] else facts["docker"]["reason"], "success" if facts["docker"]["available"] else "warning")
+                if facts["docker"].get("access_warning"):
+                    ui().result(facts["docker"]["access_warning"], "warning")
                 ui().line("Настройки: " + ("сохранены" if facts["installation"]["config"] else "не завершены"))
             return 0
         docker = resources.command(root)

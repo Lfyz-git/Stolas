@@ -8,7 +8,7 @@ Stolas измеряет скорость IPv4 TCP через iperf3, храни�
 В SSH-терминале Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.5.0/bootstrap.sh | sh -s -- --dir /opt/stolas
+curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.5.1/bootstrap.sh | sh -s -- --dir /opt/stolas
 ```
 
 Каталог должен принадлежать вам. Нужны Python 3.10+, `curl` или GNU `wget`,
@@ -21,7 +21,20 @@ curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.5.0/bootstrap.sh
 Из сводки можно изменить серверы, пороги и доступ к API.
 По умолчанию API слушает `127.0.0.1:8080`.
 
-Обычные имена: проект и контейнер `stolas`, образ `stolas:0.5.0`.
+После запуска Core мастер предложит необязательную команду в PATH:
+`~/.local/bin/stolas` для текущей учётной записи либо `/usr/local/bin/stolas`
+с отдельным подтверждением и правами записи. Можно выбрать «Позже»;
+локальная команда `./stolas` в каталоге установки работает всегда.
+Настроить позднее: `./stolas command install`; проверить: `./stolas command status`.
+Если каталог отсутствует в PATH, мастер покажет строку `export PATH=…`;
+настройки оболочки автоматически не меняются. Занятое имя сохраняется,
+для второго экземпляра можно выбрать, например, `stolas-home`.
+
+Если Docker доступен только через sudo, мастер и `stolas diagnose` покажут
+предупреждение. Группа `docker` даёт полномочия root; после изменения групп
+нужен новый вход в сессию. Доступ настраивается вручную.
+
+Обычные имена: проект и контейнер `stolas`, образ `stolas:0.5.1`.
 При конфликте мастер предложит выбрать имя экземпляра.
 В рабочем каталоге остаются `compose.yaml`, `.env`, `stolas`, `config/local.json`
 и служебный каталог `.stolas/`. Исходники сборки, состояние и резервные копии
@@ -31,16 +44,16 @@ curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.5.0/bootstrap.sh
 
 ## Запустить измерение
 
-Из каталога установки:
+После настройки команды в PATH, из любого каталога:
 
 ```sh
-./stolas run
+stolas run
 ```
 
 Команда показывает результат и предупреждения. Для обработки скриптом:
 
 ```sh
-./stolas run --json
+stolas run --json
 ```
 
 stdout содержит один JSON-объект, события идут в stderr.
@@ -51,7 +64,7 @@ stdout содержит один JSON-объект, события идут в s
 ## Получить результаты
 
 ```sh
-./stolas history
+stolas history
 ```
 
 История возвращается в JSON. HTTP API принимает Bearer-токен из `.env`:
@@ -69,7 +82,7 @@ curl -fsS -H "Authorization: Bearer $STOLAS_API_TOKEN" \
 ## Посмотреть логи
 
 ```sh
-./stolas logs
+stolas logs
 ```
 
 По умолчанию — JSON Lines, уровень INFO. Формат и уровень задаются в `.env`;
@@ -79,7 +92,7 @@ curl -fsS -H "Authorization: Bearer $STOLAS_API_TOKEN" \
 ## Изменить настройки
 
 ```sh
-./stolas configure
+stolas configure
 ```
 
 Мастер открывает сохранённую сводку. Измерения задаются в `config/local.json`,
@@ -99,7 +112,7 @@ curl -fsS -H "Authorization: Bearer $STOLAS_API_TOKEN" \
 
 ## Обновить
 
-В установленной v0.5.0:
+В установленной v0.5.0 или новее:
 
 ```sh
 ./stolas update
@@ -108,13 +121,16 @@ curl -fsS -H "Authorization: Bearer $STOLAS_API_TOKEN" \
 Для перехода с v0.4.0:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.5.0/bootstrap.sh | sh -s -- --dir /opt/stolas --action update
+curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.5.1/bootstrap.sh | sh -s -- --dir /opt/stolas --action update
 ```
 
 Обновление переносит структуру и имена совместно, сохраняет токен, конфигурацию
 и **тот же SQLite volume**. Повторный нагрузочный тест не выполняется.
 При ошибке восстанавливаются прежние файлы и сервис.
 `./stolas rollback` возвращает предыдущую установленную версию.
+Настроенная команда в PATH сохраняется при обновлении и откате. При откате
+Core к старой версии сохраняется новый инструмент управления, необходимый
+для проверки и удаления этой команды.
 
 ## Удалить
 

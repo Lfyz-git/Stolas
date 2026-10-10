@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HAS_INSTALLER = (ROOT / "tools/install.py").exists()
 if HAS_INSTALLER:
     from tools import install as installer
-    from tools import integrate
+    from tools import deploy, integrate, resources
 
 
 @unittest.skipUnless(HAS_INSTALLER, "Installer is not shipped in the production image")
@@ -125,6 +125,7 @@ class InstallerTests(unittest.TestCase):
         shutil.copy2(ROOT / "tools/environment.py", self.root / "tools/environment.py")
         shutil.copy2(ROOT / "tools/terminal.py", self.root / "tools/terminal.py")
         shutil.copy2(ROOT / "tools/layout.py", self.root / "tools/layout.py")
+        shutil.copy2(ROOT / "tools/entrypoints.py", self.root / "tools/entrypoints.py")
         shutil.copy2(ROOT / "stolas", self.root / "stolas")
         shutil.copy2(ROOT / "install.sh", self.root / "install.sh")
         shutil.copy2(ROOT / "compose.yaml", self.root / "compose.yaml")
@@ -223,6 +224,67 @@ elif "exec" in sys.argv:
             with self.assertRaises(ValueError):
                 installer.url(value)
         self.assertEqual(installer.url("http://127.0.0.1:5678/"), "http://127.0.0.1:5678")
+
+    def test_clean_runtime_without_docker_finds_script_only_after_final_confirmation(self):
+        deploy.stage_sources(ROOT, self.root, "v0.5.1", "fixture")
+        self.assertFalse((self.root / "tools").exists())
+        facts = {"hostname": "fresh", "installation": {"directory": str(self.root), "config": False},
+                 "docker": {"available": False, "reason": "Docker не установлен"}, "n8n": [], "stolas": [], "addresses": []}
+        confirmed, calls = False, []
+        def answer(prompt):
+            nonlocal confirmed
+            if confirmed:
+                return "later"
+            if "[1]" in prompt and "Проверьте настройки" in self.output.getvalue():
+                confirmed = True
+                return "apply"
+            return "off"
+        def command(args, root, **kwargs):
+            calls.append(args)
+            self.assertTrue(confirmed, "System mutation happened before review/confirmation")
+            if "sh" in args:
+                script = Path(args[-1])
+                self.assertEqual(script, self.root / ".stolas/installer/tools/install-docker.sh")
+                self.assertTrue(script.is_file())
+                self.assertTrue((root / ".env").is_file())
+            out = "unix:///var/run/docker.sock" if "context" in args else "amd64" if "--format" in args else ""
+            return subprocess.CompletedProcess(args, 0, out, "")
+        with patch.object(installer.environment, "discover", return_value=facts), patch.object(installer.environment, "port_state", return_value="free"), patch.object(installer.shutil, "which", side_effect=lambda name: None if name == "docker" else name), patch.object(installer.os, "geteuid", return_value=0, create=True), patch("builtins.input", side_effect=answer), patch.object(installer, "run", side_effect=command), patch.object(resources, "configure"), patch.object(resources, "activate"), patch.object(resources, "complete"), patch.object(installer, "request_json", return_value={"status": "ready"}), patch.object(installer, "first_test", return_value={"status": "ok"}):
+            self.assertEqual(installer.install(self.root), 0)
+        self.assertTrue(any("sh" in call for call in calls))
+        calls.clear()
+        facts["installation"]["config"] = True
+        with patch.object(installer.environment, "discover", return_value=facts), patch.object(installer.environment, "port_state", return_value="free"), patch.object(installer.shutil, "which", return_value=None), patch("builtins.input", side_effect=["cancel"]), patch.object(installer, "run", side_effect=command), self.assertRaises(installer.Cancel):
+            installer.install(self.root)
+        self.assertEqual(calls, [])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux Python bootstrap, no real apt")
+    def test_missing_python_bootstrap_asks_before_apt_and_hands_off_from_checkout(self):
+        binary = self.root / "bin"
+        binary.mkdir()
+        for name in ("dirname", "uname"):
+            (binary / name).symlink_to(shutil.which(name))
+        (binary / "id").write_text("#!/bin/sh\necho 0\n")
+        log = self.root / "apt.log"
+        apt = binary / "apt-get"
+        handoff = '#!/bin/sh\nprintf "handoff: %s\\n" "$*"\n'
+        apt.write_text("#!" + sys.executable + "\n" +
+            "import pathlib,sys\n" +
+            "with pathlib.Path(" + repr(str(log)) + ").open('a') as f: f.write(' '.join(sys.argv[1:])+'\\n')\n" +
+            "p=pathlib.Path(" + repr(str(binary / "python3")) + ")\n" +
+            "p.write_text(" + repr(handoff) + "); p.chmod(0o755)\n")
+        for name in ("id", "apt-get"):
+            (binary / name).chmod(0o755)
+        env = {**os.environ, "PATH": str(binary)}
+        for args, answer in (([], "n\n"), (["--diagnose"], "")):
+            result = subprocess.run(["/bin/sh", str(ROOT / "install.sh"), *args], input=answer, text=True, capture_output=True, env=env)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertFalse(log.exists())
+        result = subprocess.run(["/bin/sh", str(ROOT / "install.sh"), "--configure-only"], input="y\n", text=True, capture_output=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("мастера нужен Python", result.stdout)
+        self.assertEqual(log.read_text().splitlines(), ["update", "install -y python3"])
+        self.assertIn("handoff: tools/deploy.py --configure-only", result.stdout)
 
 
 

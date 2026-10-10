@@ -122,7 +122,7 @@ def runtime_files(source):
             result[".stolas/build/" + name] = source / name
         if name in ("Dockerfile", ".dockerignore", "LICENSE", "config/example.json", "config/apk.lock.json", "config/apk-aarch64.lock", "config/apk-x86_64.lock", "tools/install-apk.sh"):
             result[".stolas/build/" + name] = source / name
-        installer_names = {"tools/deploy.py", "tools/install.py", "tools/manage.py", "tools/resources.py", "tools/layout.py", "tools/environment.py", "tools/terminal.py", "tools/integrate.py", "tools/legacy-v0.4.0.json"}
+        installer_names = {"tools/deploy.py", "tools/install.py", "tools/manage.py", "tools/resources.py", "tools/layout.py", "tools/environment.py", "tools/terminal.py", "tools/integrate.py", "tools/entrypoints.py", "tools/legacy-v0.4.0.json"}
         if name in installer_names or name in ("tools/install-docker.sh", "agent/config.py", "agent/__init__.py", "config/example.json", "n8n/stolas.json", "LICENSE"):
             result[".stolas/installer/" + name] = source / name
         if name in ("compose.yaml", "stolas"):
@@ -224,9 +224,22 @@ def stage_sources(source, target, ref, digest):
     return backup
 
 
-def restore(target, backup):
+def restore(target, backup, preserve_manager=False):
     state = read_json(layout.bounded(target, backup.relative_to(target) / "state.json"))
+    # An explicit Core rollback must retain PATH ownership/cleanup support even
+    # when the preceding release predates that support. State is not versioned.
+    keep = {}
+    if preserve_manager and read_json(layout.bounded(target, ".stolas/state/entrypoint.json")).get("path"):
+        current = read_json(layout.bounded(target, ".stolas/state/managed.json"))
+        for name in current.get("files", []):
+            if name == "stolas" or name.startswith(".stolas/installer/"):
+                path = layout.bounded(target, name)
+                if not path.is_file():
+                    raise RuntimeError("Команда управления повреждена; повторите обновление перед откатом")
+                keep[name] = hashlib.sha256(path.read_bytes()).hexdigest()
     for name, existed in state["files"].items():
+        if name in keep:
+            continue
         path = layout.bounded(target, name)
         if existed:
             replace_file(layout.bounded(backup / "files", name), path)
@@ -240,7 +253,11 @@ def restore(target, backup):
             if expected and hashlib.sha256(path.read_bytes()).hexdigest() != expected:
                 raise RuntimeError("Управляемый файл изменён после обновления; сохраните его и повторите откат: " + name)
             path.unlink()
-    atomic_json(target / ".stolas/state/managed.json", state["previous_manifest"])
+    previous = state["previous_manifest"]
+    if keep:
+        previous = {**previous, "files": sorted(set(previous.get("files", [])) | set(keep)),
+                    "hashes": {**previous.get("hashes", {}), **keep}, "management_version": layout.VERSION}
+    atomic_json(target / ".stolas/state/managed.json", previous)
     prune_empty(target, state["files"])
 
 
@@ -272,11 +289,11 @@ def run_installer(target, configure_only=False, reuse=False, recover=False):
     return subprocess.run(args, cwd=target).returncode
 
 
-def rollback_files(target, backup, configure_only=False):
+def rollback_files(target, backup, configure_only=False, preserve_manager=False):
     from tools import resources
     state = read_json(backup / "state.json")
     docker = resources.stop_replacement(target) if state.get("configured") and not configure_only else None
-    restore(target, backup)
+    restore(target, backup, preserve_manager=preserve_manager)
     if docker and not resources.load(target, "resources.json").get("uninstalled"):
         resources.restart(target, docker)
 
@@ -321,7 +338,7 @@ def deploy(source, target, ref="checkout", digest="", action=None, configure_onl
                 backup = layout.bounded(target, previous["backup"])
                 if not read_json(backup / "state.json").get("configured"):
                     raise RuntimeError("Резервная копия не содержит предыдущую установленную версию")
-                rollback_files(target, backup, configure_only)
+                rollback_files(target, backup, configure_only, preserve_manager=True)
                 atomic_json(journal, {"phase": "rolled_back", "backup": backup.relative_to(target).as_posix()})
                 from tools.terminal import ui
                 ui().result("Предыдущая версия восстановлена; история сохранена")

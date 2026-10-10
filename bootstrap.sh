@@ -5,7 +5,7 @@ main() {
     set -eu
     umask 022
     target=""
-    ref=v0.5.0
+    ref=v0.5.1
     expected=""
     action=""
     workdir=""
@@ -15,7 +15,7 @@ main() {
         cat <<'EOF'
 Установка Stolas без Git (Linux).
   --dir PATH          каталог установки (по умолчанию: $HOME/stolas)
-  --ref REF           релиз, ветка или SHA (по умолчанию: v0.5.0)
+  --ref REF           релиз, ветка или SHA (по умолчанию: v0.5.1)
   --sha256 HASH       ожидаемый SHA-256 архива при установке SHA/main
   --action ACTION     reconfigure/update/rollback/uninstall/cancel
   --configure-only    только подготовить настройки, без Docker и теста

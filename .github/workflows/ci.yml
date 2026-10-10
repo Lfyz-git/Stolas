@@ -21,7 +21,7 @@ jobs:
           path: /tmp/stolas-terminal.ansi
       - name: Check installer shell syntax
         run: |
-          for script in bootstrap.sh install.sh tools/install-docker.sh; do
+          for script in stolas bootstrap.sh install.sh tools/install-docker.sh; do
             bash -n "$script"
           done
       - run: node tests/workflow.test.cjs

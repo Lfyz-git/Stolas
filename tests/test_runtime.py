@@ -37,12 +37,27 @@ def frozen_install(root):
     return root
 
 
+def frozen_runtime(root):
+    """Published v0.5.0 sources, including that release's actual manager."""
+    with tempfile.TemporaryDirectory() as directory:
+        source = Path(directory)
+        with tarfile.open(ROOT / "tests/fixtures/v0.5.0.tar.gz") as archive:
+            for member in archive:
+                if member.isfile():
+                    name = member.name.split("/", 1)[1]
+                    path = source / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(archive.extractfile(member).read())
+        deploy.stage_sources(source, root, "v0.5.0", "frozen")
+    return root
+
+
 class DockerFixture:
     """Stateful fake daemon: removal tests observe actual ownership decisions."""
     def __init__(self):
         self.items, self.volumes, self.images, self.calls = [], {}, {}, []
 
-    def container(self, root, project, instance=None, volume=None, id=None, version="0.5.0"):
+    def container(self, root, project, instance=None, volume=None, id=None, version="0.5.1"):
         labels = {"com.docker.compose.project": project, "com.docker.compose.project.working_dir": str(root), "com.docker.compose.service": "stolas"}
         if instance:
             labels["org.stolas.instance"] = instance
@@ -117,7 +132,7 @@ class RuntimeTests(unittest.TestCase):
         self.addCleanup(self.command.stop)
 
     def runtime(self):
-        deploy.stage_sources(ROOT, self.root, "v0.5.0", "fixture")
+        deploy.stage_sources(ROOT, self.root, "v0.5.1", "fixture")
         (self.root / ".env").write_text("STOLAS_API_TOKEN=" + "a" * 40 + "\nSTOLAS_LISTEN=127.0.0.1\nSTOLAS_PORT=8080\n")
         (self.root / "config").mkdir(exist_ok=True)
         (self.root / "config/local.json").write_text(json.dumps(install.DEFAULT))
@@ -147,7 +162,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(resources.read_env(self.root), before)
         self.assertEqual(before["STOLAS_PROJECT_NAME"], "stolas")
         self.assertEqual(before["STOLAS_CONTAINER_NAME"], "stolas")
-        self.assertEqual(self.docker.items[0]["image"], "stolas:0.5.0")
+        self.assertEqual(self.docker.items[0]["image"], "stolas:0.5.1")
 
     def test_name_collision_requests_a_human_name_and_keeps_foreign_container(self):
         self.runtime()
@@ -291,7 +306,7 @@ class RuntimeTests(unittest.TestCase):
                 raise OSError("injected write failure")
             return original(source, destination)
         with patch.object(deploy, "replace_file", side_effect=fail), self.assertRaises(OSError):
-            deploy.stage_sources(ROOT, self.root, "v0.5.0", "")
+            deploy.stage_sources(ROOT, self.root, "v0.5.1", "")
         self.assertEqual((self.root / ".env").read_bytes(), before)
         self.assertTrue((self.root / "agent/runner.py").is_file())
 
@@ -343,10 +358,10 @@ class RuntimeTests(unittest.TestCase):
     def test_shared_image_is_preserved(self):
         self.runtime(); self.activate()
         foreign = self.docker.container(self.root.parent / "foreign", "foreign", "different")
-        foreign["image_id"] = self.docker.images["stolas:0.5.0"]["id"]
+        foreign["image_id"] = self.docker.images["stolas:0.5.1"]["id"]
         with patch("builtins.input", side_effect=["1", "1"]):
             manage.uninstall(self.root)
-        self.assertIn("stolas:0.5.0", self.docker.images)
+        self.assertIn("stolas:0.5.1", self.docker.images)
         self.assertIn(foreign, self.docker.items)
 
     def test_replaced_volume_with_same_name_is_not_owned(self):

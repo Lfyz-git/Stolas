@@ -78,6 +78,16 @@ def image_info(root, docker, name):
     return json.loads(result.stdout) if result.returncode == 0 else None
 
 
+def core_version(root):
+    """Core may be older than the retained manager after an explicit rollback."""
+    path = layout.bounded(root, "compose.yaml")
+    if path.is_file():
+        match = re.search(r"^\s+image:\s*[^\n]+:(\d+\.\d+\.\d+)\s*$", path.read_text(encoding="utf-8"), re.MULTILINE)
+        if match:
+            return match.group(1)
+    return layout.VERSION
+
+
 def save(root, name, value):
     from tools.deploy import atomic_json
     atomic_json(layout.bounded(root, ".stolas/state/" + name), value)
@@ -114,7 +124,7 @@ def configure(root, docker):
     while True:
         valid_name(project)
         conflicts = [c for c in items if (c["name"].lstrip("/") == project or (c.get("labels") or {}).get("com.docker.compose.project") == project) and c not in ours]
-        candidate_image = image_info(root, docker, project + ":" + layout.VERSION)
+        candidate_image = image_info(root, docker, project + ":" + core_version(root))
         foreign_image = candidate_image and (candidate_image.get("labels") or {}).get("org.stolas.instance") != instance
         candidate_volume = volume_info(root, docker, project + "_stolas-data") if not old_project and not env.get("STOLAS_DATA_VOLUME") else None
         foreign_volume = candidate_volume and (candidate_volume.get("labels") or {}).get("org.stolas.instance") != instance
@@ -183,7 +193,7 @@ def activate(root, docker):
 
 def complete(root, docker):
     state = load(root, "resources.json")
-    ref = state["project"] + ":" + layout.VERSION
+    ref = state["project"] + ":" + core_version(root)
     image = image_info(root, docker, ref)
     if image:
         state.setdefault("images", {})[ref] = image["id"]

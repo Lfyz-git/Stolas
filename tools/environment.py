@@ -38,7 +38,7 @@ def discover(root):
     facts = {"hostname": socket.gethostname(), "tools": {name: bool(shutil.which(name)) for name in ("docker", "ip", "curl", "wget", "tar", "python3", "apt-get", "sudo")},
              "system": platform.system(), "architecture": platform.machine(),
              "addresses": [], "n8n": [], "stolas": [], "networks": {}, "warnings": [],
-             "docker": {"available": False, "command": [], "reason": "Docker не установлен"},
+             "docker": {"available": False, "command": [], "reason": "Docker не установлен", "access_status": "missing", "requires_sudo": False},
              "installation": {"directory": str(root), "config": (root / "config/local.json").is_file(),
                               "env": (root / ".env").is_file(), "draft": layout.state_path(root, ".stolas-draft.json").is_file()}}
     zone = os.environ.get("TZ")
@@ -86,11 +86,20 @@ def discover(root):
     docker = ["docker"]
     result = command(docker + ["info", "--format", "{{.OSType}} {{.Architecture}} {{.ServerVersion}}"])
     permission = "permission denied" in result.stderr.lower() or "access denied" in result.stderr.lower()
+    access = {"access_status": "permission_denied" if permission else "unavailable" if result.returncode else "direct", "requires_sudo": False}
+    if permission:
+        access["access_warning"] = ("Docker установлен, но текущая учётная запись не имеет доступа к Docker socket. "
+            "Для команд Stolas может потребоваться sudo (с абсолютным путём к ./stolas) либо ручная настройка доступа. "
+            "Группа docker предоставляет полномочия root; после изменения групп нужен новый вход в сессию. "
+            "Установщик не меняет группы или права сокета.")
+    facts["docker"].update(access)
     if result.returncode and facts["tools"]["sudo"]:
         elevated = ["sudo", "-n", "docker"]
         attempt = command(elevated + ["info", "--format", "{{.OSType}} {{.Architecture}} {{.ServerVersion}}"])
         if attempt.returncode == 0:
             docker, result = elevated, attempt
+            access.update(requires_sudo=True, access_status="sudo")
+            facts["docker"].update(access)
     if result.returncode:
         facts["docker"]["reason"] = "Нет прав к Docker socket; настройте доступ или заранее выполните sudo -v" if permission else "Docker API недоступен: проверьте службу Docker и выбранный context"
         return facts
@@ -105,7 +114,7 @@ def discover(root):
         return facts
     compose = command(docker + ["compose", "version", "--short"])
     facts["docker"] = {"available": True, "command": docker, "reason": "", "version": " ".join(info),
-                       "compose": compose.stdout.strip() if compose.returncode == 0 else None}
+                       "compose": compose.stdout.strip() if compose.returncode == 0 else None, **access}
     listed = command(docker + ["ps", "-q"])
     if listed.returncode:
         facts["warnings"].append("Не удалось перечислить запущенные контейнеры Docker")
