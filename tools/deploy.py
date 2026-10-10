@@ -312,6 +312,10 @@ def deploy(source, target, ref="checkout", digest="", action=None, configure_onl
     pending = read_json(pending_path)
     if target.exists() and any(target.iterdir()) and not installed(target) and not recoverable(target) and not pending.get("backup"):
         raise ValueError("В каталоге посторонние файлы. Выберите другой --dir; файлы не изменены")
+    if not configure_only and action != "rollback" and (target / ".env").is_file() and (target / "config/local.json").is_file():
+        from tools.install import require_docker_access
+        layout.preflight(target)
+        require_docker_access(target)
     with install_lock(target):
         diagnostic = target / ".stolas/state/status.json"
         journal = target / ".stolas/state/transaction.json"

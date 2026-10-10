@@ -356,7 +356,7 @@ def check_api_port(api, facts, allow_existing=False):
     address, port = api["STOLAS_LISTEN"], int(api["STOLAS_PORT"])
     if not facts["docker"]["available"]:
         raise RuntimeError(facts["docker"]["reason"] + ". Старый сервис не остановлен; восстановите доступ к Docker")
-    bindings = [b for b in facts.get("port_bindings", []) if b["port"] == port and b["address"] in (address, "0.0.0.0", "::", "")]
+    bindings = [b for b in facts.get("port_bindings", []) if b["port"] == port and (address in ("0.0.0.0", "::") or b["address"] in (address, "0.0.0.0", "::", ""))]
     if any(not b["owned"] for b in bindings):
         raise RuntimeError(f"Конфликт {address}:{port} подтверждён Docker: порт опубликован посторонним контейнером. Старый Stolas не остановлен; освободите endpoint или явно измените настройку")
     state = environment.port_state(address, port)
@@ -367,6 +367,12 @@ def check_api_port(api, facts, allow_existing=False):
     if state == "busy":
         raise RuntimeError(f"Endpoint {address}:{port} занят, но принадлежность слушателя не подтверждена. Старый сервис не остановлен; проверьте Docker, ss и повторите диагностику. Порт автоматически не меняется")
     raise RuntimeError(f"Не удалось проверить привязку {address}:{port}: {state}. Старый сервис не остановлен")
+
+
+def require_docker_access(root, facts=None):
+    facts = facts or environment.discover(root)
+    if not facts["docker"]["available"] and (facts.get("tools", {}).get("docker") or shutil.which("docker")):
+        raise RuntimeError(facts["docker"]["reason"] + ". Мастер остановлен до настройки: восстановите доступ к Docker и повторите команду; доступ через sudo -n также проверен")
 
 
 def save_draft(root, plan):
@@ -606,7 +612,8 @@ def first_test(compose, root):
     ui().line("\nТест скорости (может занять несколько минут)…")
     result = run(compose + ["exec", "-T", "stolas", "python3", "-m", "agent", "run"], root, capture=True, check=False)
     if result.returncode not in (0, 2):
-        raise RuntimeError("Тест не запущен. Проверьте ./stolas diagnose; повторите ./stolas run после завершения текущего теста")
+        from tools.diagnostics import command
+        raise RuntimeError("Тест не запущен. Проверьте " + command(root) + "; повторите " + command(root, "run") + " после завершения текущего теста")
     data = json.loads(result.stdout)
     if data.get("time"):
         from tools import timezones
@@ -672,8 +679,8 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
     existing = validated(current) if current.exists() else copy.deepcopy(DEFAULT)
     facts = environment.discover(root)
     print_facts(facts)
-    if not configure_only and not facts["docker"]["available"] and (facts.get("tools", {}).get("docker") or shutil.which("docker")):
-        raise RuntimeError(facts["docker"]["reason"] + ". Мастер остановлен до настройки: восстановите доступ к Docker и повторите команду; доступ через sudo -n также проверен")
+    if not configure_only:
+        require_docker_access(root, facts)
     old_api = read_api(root) if (root / ".env").is_file() else None
     plan = {"config": existing, "api": read_api(root), "completed": []} if recover else collect_plan(root, existing, facts, reuse)
     validate_plan(plan)
@@ -735,8 +742,9 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
     ui().result("Stolas Core запущен")
     ui().line("API: http://" + api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"])
     ui().line("Токен API сохранён в .env; история — в Docker volume.")
-    ui().line("Результаты: ./stolas history")
-    ui().line("Логи: ./stolas logs")
+    from tools.diagnostics import command
+    ui().line("Результаты: " + command(root, "history"))
+    ui().line("Логи: " + command(root, "logs"))
     checkpoint("complete", first_status=result["status"] if result else None)
     layout.state_path(root, ".stolas-draft.json").unlink()
     if layout.runtime(root):

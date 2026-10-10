@@ -186,6 +186,11 @@ class RuntimeDockerTests(unittest.TestCase):
         env = {**install.clean_env(), "PATH": str(binary) + os.pathsep + os.environ["PATH"]}
         def cli(args, answer=""):
             return subprocess.run(["stolas", *args], cwd=self.tmp.name, env=env, input=answer, text=True, capture_output=True, timeout=150)
+        # The fixture's completed cycle stands in for a recovered first test;
+        # configure must not contact public speed-test servers in CI.
+        progress_path = self.root / ".stolas/state/progress.json"
+        progress = deploy.read_json(progress_path)
+        deploy.atomic_json(progress_path, {**progress, "stage": "measured", "measurement_done": True, "first_status": "ok"})
         result = cli(["configure"], "apply\nlater\n")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         result = cli(["diagnose", "--json"])

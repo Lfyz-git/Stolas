@@ -10,7 +10,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 HAS_TOOLS = (ROOT / "tools/install.py").is_file()
 if HAS_TOOLS:
-    from tools import install, environment
+    from tools import install, environment, deploy, manage
 
 
 @unittest.skipUnless(HAS_TOOLS, "Host installer outside Core image")
@@ -51,6 +51,18 @@ class PortUpdateTests(unittest.TestCase):
             with patch.object(environment, "discover", return_value=self.facts), patch.object(install, "collect_plan") as wizard, patch.object(install, "commit_configuration") as commit, patch.object(environment, "port_state") as port, self.assertRaisesRegex(RuntimeError, "до настройки"):
                 install.install(self.root, reuse=True)
             wizard.assert_not_called(); commit.assert_not_called(); port.assert_not_called()
+        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
+
+    def test_update_entrypoints_stop_before_download_lock_or_staging(self):
+        deploy.stage_sources(ROOT, self.root, "fixture", "")
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        self.facts["docker"] = {"available": False, "reason": "Нет прав к Docker socket"}
+        with patch.object(environment, "discover", return_value=self.facts), patch.object(deploy, "stage_sources") as stage, patch.object(deploy, "install_lock") as lock, self.assertRaisesRegex(RuntimeError, "до настройки"):
+            deploy.deploy(ROOT, self.root, action="update")
+        stage.assert_not_called(); lock.assert_not_called()
+        with patch.object(environment, "discover", return_value=self.facts), patch.object(manage.urllib.request, "urlopen") as fetch, self.assertRaisesRegex(RuntimeError, "до настройки"):
+            manage.update(self.root)
+        fetch.assert_not_called()
         self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
 
     def test_configure_only_allows_unavailable_docker_and_preserves_endpoint(self):

@@ -124,6 +124,7 @@ class InstallerTests(unittest.TestCase):
         shutil.copy2(ROOT / "tools/deploy.py", self.root / "tools/deploy.py")
         shutil.copy2(ROOT / "tools/environment.py", self.root / "tools/environment.py")
         shutil.copy2(ROOT / "tools/timezones.py", self.root / "tools/timezones.py")
+        shutil.copy2(ROOT / "tools/diagnostics.py", self.root / "tools/diagnostics.py")
         shutil.copy2(ROOT / "tools/terminal.py", self.root / "tools/terminal.py")
         shutil.copy2(ROOT / "tools/layout.py", self.root / "tools/layout.py")
         shutil.copy2(ROOT / "tools/entrypoints.py", self.root / "tools/entrypoints.py")

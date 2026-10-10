@@ -176,7 +176,7 @@ def uninstall(root, purge=False):
             if path.is_file():
                 path.unlink()
         prune_empty(root, remove)
-        terminal.result("Stolas удалён полностью" if purge else "Агент удалён. История сохранена; восстановление: ./stolas update")
+        terminal.result("Stolas удалён полностью" if purge else "Агент удалён. История сохранена; восстановление: " + diagnostics.command(root, "update"))
         if purge:
             remaining_files = [p for p in root.rglob("*") if p.is_file() or p.is_symlink()]
             if remaining_files:
@@ -190,6 +190,8 @@ def uninstall(root, purge=False):
 
 
 def update(root, version=None):
+    from tools.install import require_docker_access
+    require_docker_access(root)
     terminal = ui()
     terminal.stage("Обновление")
     if version is None:
