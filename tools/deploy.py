@@ -126,7 +126,7 @@ def runtime_files(source):
             result[".stolas/build/" + name] = source / name
         if name in ("Dockerfile", ".dockerignore", "LICENSE", "config/example.json", "config/apk.lock.json", "config/apk-aarch64.lock", "config/apk-x86_64.lock", "tools/install-apk.sh"):
             result[".stolas/build/" + name] = source / name
-        installer_names = {"tools/deploy.py", "tools/install.py", "tools/manage.py", "tools/resources.py", "tools/layout.py", "tools/environment.py", "tools/terminal.py", "tools/integrate.py", "tools/entrypoints.py", "tools/diagnostics.py", "tools/legacy-v0.4.0.json"}
+        installer_names = {"tools/deploy.py", "tools/install.py", "tools/manage.py", "tools/resources.py", "tools/layout.py", "tools/environment.py", "tools/terminal.py", "tools/integrate.py", "tools/entrypoints.py", "tools/diagnostics.py", "tools/timezones.py", "tools/legacy-v0.4.0.json"}
         if name in installer_names or name in ("tools/install-docker.sh", "agent/config.py", "agent/__init__.py", "config/example.json", "n8n/stolas.json", "LICENSE"):
             result[".stolas/installer/" + name] = source / name
         if name in ("compose.yaml", "stolas"):

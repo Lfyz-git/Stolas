@@ -9,6 +9,7 @@ import argparse
 import copy
 import ipaddress
 import json
+import hashlib
 import subprocess
 import urllib.parse
 from tools.install import (ask, choice, select_named, propose_port, url, matching,
@@ -185,6 +186,10 @@ def check_connection(root, options, api, compose):
 
 
 def connect_n8n(root, options, api, data):
+    template = json.loads(json.dumps(data))
+    for node in template["nodes"]:
+        node.pop("credentials", None)
+    template_sha = hashlib.sha256(json.dumps(template, sort_keys=True).encode()).hexdigest()
     local = layout.integration_path(root, "local.json")
     write_private(local, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
     if options["mode"] == "export":
@@ -197,13 +202,26 @@ def connect_n8n(root, options, api, data):
     if state.get("pending"):
         raise ValueError("Предыдущий запрос мог создать ресурс. Проверьте " + str(state_path) + " и импортируйте файл вручную")
     if state.get("workflow_id"):
-        ui().result("workflow уже подключён; дубликат не создаётся")
-        return True
+        if state.get("workflow_timezone") == options["timezone"] and state.get("template_sha256") == template_sha:
+            ui().result("workflow уже подключён; дубликат не создаётся")
+            return True
+        ui().result("Подготовлены новые настройки, но существующий workflow требует ручного обновления.", "warning")
+        ui().line("Workflow: " + options["url"] + "/workflow/" + urllib.parse.quote(str(state["workflow_id"]), safe=""))
+        ui().line("Файл: " + str(local))
+        ui().line("В n8n сохраните резервную копию workflow, обновите его из файла, проверьте credentials и timezone " + options["timezone"] + ", выполните Manual test и опубликуйте изменения расписания. Новый workflow не создаётся.")
+        return False
     try:
         items = list_credentials(options)
     except (RuntimeError, ValueError):
         ui().result("n8n не разрешил чтение списка credentials. Файл подготовлен для ручного импорта.", "warning")
         return False
+    projects = {p["id"]: p for c in items for p in c["projects"]}
+    if not projects:
+        ui().result("n8n не сообщил проекты credentials. Используйте ручной импорт.", "warning")
+        return False
+    project = select_named("Проект workflow", list(projects.values()), [p["name"] for p in projects.values()])
+    # Presentation scope only. n8n must enforce authorization on the server.
+    items = [c for c in items if any(p["id"] == project["id"] for p in c["projects"])]
     telegram = credential_choice(items, "telegramApi")
     if telegram is None:
         ui().result("Telegram credential не найден. Создайте его в n8n и повторите подключение либо импортируйте файл вручную.", "warning")
@@ -213,17 +231,6 @@ def connect_n8n(root, options, api, data):
     if header is None:
         if choice("Создать в n8n credential для доступа к Stolas?", ("create", "export"), "export") != "create":
             return False
-    projects = {p["id"]: p for p in telegram["projects"]}
-    if header:
-        header_projects = {p["id"] for p in header["projects"]}
-        projects = {k: v for k, v in projects.items() if k in header_projects}
-        if telegram["projects"] and not projects:
-            ui().result("Credentials находятся в разных проектах. Выберите общий доступ в n8n и импортируйте файл вручную.", "warning")
-            return False
-    project = select_named("Проект workflow", list(projects.values()), [p["name"] for p in projects.values()]) if projects else None
-    if not project:
-        ui().result("n8n не сообщил проекты credentials. Безопасная автоматическая привязка невозможна; используйте ручной импорт.", "warning")
-        return False
     ui().line("Будет создан неактивный workflow. Telegram credential: " + telegram["name"])
     if choice("Подключить workflow?", ("connect", "export"), "connect") != "connect":
         return False
@@ -247,6 +254,8 @@ def connect_n8n(root, options, api, data):
     write_private(state_path, json.dumps(state) + "\n")
     created = request_json(base, "/workflows", options["key"], payload, n8n=True)
     state["workflow_id"] = str(created["id"])
+    state["workflow_timezone"] = options["timezone"]
+    state["template_sha256"] = template_sha
     state.pop("pending")
     write_private(state_path, json.dumps(state) + "\n")
     ui().result("неактивный workflow создан")
@@ -260,6 +269,8 @@ def integrate(root, mode=None):
     previous = json.loads(settings.read_text()) if settings.exists() else {}
     previous = {k: v for k, v in previous.items() if k not in ("key", "bot_token")}
     facts = environment.discover(root)
+    from tools import timezones
+    timezones.require(facts)
     with install_lock(root):
         while True:
             try:
@@ -270,7 +281,9 @@ def integrate(root, mode=None):
                 options["chat_id"] = ask("Telegram chat ID", previous.get("chat_id", ""), matching(r"-?\d+|@[a-zA-Z0-9_]{5,}"))
                 options["notification_mode"] = choice("Какие сообщения отправлять?", ("alerts_only", "every_measurement", "daily_summary"), previous.get("notification_mode", "alerts_only"))
                 options["hours"] = ask("Интервал измерений, часов", previous.get("hours", 3), integer(1, 23))
-                options["timezone"] = ask("Часовой пояс", previous.get("timezone", facts.get("timezone") or "Etc/UTC"), timezone)
+                from tools import timezones
+                options["timezone"] = timezones.require(facts)
+                ui().line("Часовой пояс ОС: " + options["timezone"] + " (" + facts.get("timezone_source", "ОС") + ")")
                 options["summary_hour"] = ask("Час сводки", previous.get("summary_hour", 9), integer(0, 23)) if options["notification_mode"] == "daily_summary" else 9
                 if selected_mode == "api":
                     options["url"] = ask("Адрес n8n", previous.get("url", ""), url)

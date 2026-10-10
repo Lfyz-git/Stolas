@@ -174,13 +174,8 @@ def ports(value):
 
 
 def timezone(value):
-    if value == "Etc/UTC":
-        return value
-    try:
-        ZoneInfo(value)
-    except ZoneInfoNotFoundError:
-        raise ValueError("неизвестный IANA timezone или отсутствует пакет tzdata (Ubuntu: sudo apt-get install tzdata)") from None
-    return value
+    from tools.timezones import validate
+    return validate(value)
 
 
 def https_url(value):
@@ -603,6 +598,14 @@ def first_test(compose, root):
     if result.returncode not in (0, 2):
         raise RuntimeError("Тест не запущен. Проверьте ./stolas diagnose; повторите ./stolas run после завершения текущего теста")
     data = json.loads(result.stdout)
+    if data.get("time"):
+        from tools import timezones
+        zone = timezones.discover()
+        if zone["name"]:
+            ui().line("Время: " + timezones.display(data["time"], zone["name"]))
+        else:
+            ui().result(zone["error"], "warning")
+            ui().line("Время UTC (пояс ОС не определён): " + data["time"])
     ui().line("Результат теста: " + {"ok": "успешно", "low_confirmed": "подтверждено снижение скорости", "low_unconfirmed": "низкая скорость без независимого подтверждения", "server_disagreement": "серверы показали разные результаты", "route_blocked": "измерение остановлено проверкой канала", "unavailable": "серверы недоступны"}.get(data["status"], data["status"]))
     if "mixed_routing" in data.get("warnings", []):
         ui().line()

@@ -4,9 +4,9 @@ const assert = require('node:assert/strict');
 const workflow = JSON.parse(fs.readFileSync('n8n/stolas.json', 'utf8'));
 const code = name => new Function('$json', '$', workflow.nodes.find(n => n.name === name).parameters.jsCode);
 const classify = code('Classify result');
-const settings = mode => name => ({first: () => ({json: {notificationMode: mode, chatId: '123'}})});
+const settings = (mode, timezone = 'Europe/Moscow') => name => ({first: () => ({json: {notificationMode: mode, chatId: '123', timezone}})});
 const sample = {server: 'test-server', group: 'additional', valid: true, download: {mbps: 1}, upload: {mbps: 2}};
-const cycle = {node: 'test-node', time: 'test-time', id: 'cycle', primary: sample, wan_alert: false};
+const cycle = {node: 'test-node', time: '2026-10-10T20:18:00Z', id: 'cycle', primary: sample, wan_alert: false};
 for (const mode of ['alerts_only', 'daily_summary']) {
   for (const status of ['ok', 'server_disagreement', 'low_unconfirmed']) {
     assert.deepEqual(classify({...cycle, status}, settings(mode)), []);
@@ -21,7 +21,7 @@ for (const status of ['ok', 'server_disagreement', 'low_unconfirmed', 'low_confi
   const item = classify({...cycle, status}, settings('every_measurement'))[0].json;
   assert.equal(item.chatId, '123');
   assert.match(item.text, /test-node/);
-  assert.match(item.text, /test-time/);
+  assert.match(item.text, /23:18:00.*Europe\/Moscow/);
   assert.match(item.text, new RegExp(status));
 }
 assert.match(classify({error: 'secret-raw-error'}, settings('alerts_only'))[0].json.text, /API unavailable/);
@@ -53,6 +53,12 @@ assert.match(success.text, /884,9 Мбит\/с/);
 assert.match(success.text, /Проблем по результатам тестов не выявлено/);
 assert.doesNotMatch(success.text, /Statuses:|Average DL|Stolas daily summary/);
 assert.match(daily(normal, 'Etc/UTC').text, /20:19 UTC/);
+assert.match(daily(normal, undefined).text, /23:19/);
+assert.match(daily(normal, '').text, /часовой пояс ОС не настроен/);
+assert.match(daily({...normal, window_start: '2026-10-10T22:18:00Z'}, 'Europe/Moscow').text, /11\.10.*01:18/);
+assert.match(daily({...normal, window_start: '2026-03-29T00:30:00Z', window_end: '2026-03-29T01:30:00Z'}, 'Europe/Berlin').text, /01:30.*03:30/);
+assert.match(classify({...cycle, status: 'ok', time: '2026-03-29T01:30:00Z'}, settings('every_measurement', 'Europe/Berlin'))[0].json.text, /03:30:00/);
+assert.match(classify({...cycle, status: 'ok'}, settings('every_measurement', ''))[0].json.text, /Часовой пояс ОС.*не определены/);
 
 const confirmed = daily({...normal, statuses: {ok: 5, low_confirmed: 1}});
 assert.match(confirmed.text, /🔴 Обнаружены проблемы/);

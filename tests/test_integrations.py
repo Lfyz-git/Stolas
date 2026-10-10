@@ -118,14 +118,43 @@ class IntegrationTests(unittest.TestCase):
 
     def test_project_mismatch_or_unknown_sharing_does_not_post(self):
         self.items[1] = self.credential("api", "httpHeaderAuth", "p2")
-        self.assertFalse(self.connect(("1",)))
+        self.assertFalse(self.connect(("1", "export")))
         self.assertFalse(any(b for p, b in self.calls))
         self.items[1].pop("shared")
-        self.assertFalse(self.connect(("1",)))
+        self.assertFalse(self.connect(("export",)))
         self.assertFalse(any(b for p, b in self.calls))
         for item in self.items:
             item.pop("shared", None)
         self.assertFalse(self.connect(("1",)))
+
+    def test_selected_project_never_displays_foreign_credential_names(self):
+        self.items.extend([self.credential("FOREIGN_TELEGRAM", "telegramApi", "p2"), self.credential("FOREIGN_API", "httpHeaderAuth", "p2")])
+        self.assertTrue(self.connect(("1", "1", "connect")))
+        self.assertNotIn("FOREIGN_TELEGRAM", self.output.getvalue())
+        self.assertNotIn("FOREIGN_API", self.output.getvalue())
+        body = next(body for path, body in self.calls if path == "/workflows")
+        self.assertEqual(body["projectId"], "p1")
+
+    def test_host_timezone_change_exports_existing_workflow_without_remote_mutation(self):
+        self.assertTrue(self.connect())
+        self.calls.clear()
+        self.options["timezone"] = "Europe/Moscow"
+        self.data = integrate.workflow(ROOT, self.options)
+        self.assertFalse(self.connect(()))
+        self.assertEqual(self.calls, [])
+        saved = json.loads((self.root / "n8n/local.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["settings"]["timezone"], "Europe/Moscow")
+        self.assertIn("ручного обновления", " ".join(self.output.getvalue().split()))
+        self.assertIn("/workflow/new-id", self.output.getvalue())
+
+    def test_unknown_host_timezone_stops_before_wizard_or_writes(self):
+        facts = self.installed_core()
+        facts["timezone"] = None
+        facts["timezone_error"] = "Не удалось определить пояс ОС"
+        with patch.object(integrate.environment, "discover", return_value=facts), patch("builtins.input") as prompt, self.assertRaisesRegex(ValueError, "пояс ОС"):
+            integrate.integrate(self.root, "export")
+        prompt.assert_not_called()
+        self.assertFalse((self.root / "n8n/local.json").exists())
 
     def test_only_stolas_header_credential_can_be_created_with_explicit_choice(self):
         self.items = self.items[:1]
@@ -171,10 +200,11 @@ class IntegrationTests(unittest.TestCase):
     def test_separate_export_wizard_never_asks_api_key_or_restarts_core(self):
         facts = self.installed_core()
         original = (self.root / ".env").read_bytes()
-        with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "request_json", return_value={"status": "ready"}), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "123", "", "", "", "apply"]), patch("getpass.getpass") as secret:
+        with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "request_json", return_value={"status": "ready"}), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "123", "", "", "apply"]) as prompt, patch("getpass.getpass") as secret:
             self.assertEqual(integrate.integrate(self.root, "export"), 0)
         secret.assert_not_called(); run.assert_not_called()
         self.assertEqual((self.root / ".env").read_bytes(), original)
+        self.assertFalse(any("Часовой пояс" in c.args[0] for c in prompt.call_args_list))
 
     def test_failed_network_change_restores_core_and_keeps_manual_export(self):
         facts = self.installed_core()
@@ -182,7 +212,7 @@ class IntegrationTests(unittest.TestCase):
         def topology(api, *args):
             api["STOLAS_LISTEN"] = "172.18.0.1"
             return dict(topology="docker", docker_id="abc", endpoint="http://172.18.0.1:8080")
-        with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate, "collect_topology", side_effect=topology), patch.object(integrate, "validate_discovered_endpoint"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "check_connection", side_effect=RuntimeError("exception-private-secret")), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["123", "", "", "", "apply"]):
+        with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate, "collect_topology", side_effect=topology), patch.object(integrate, "validate_discovered_endpoint"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "check_connection", side_effect=RuntimeError("exception-private-secret")), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["123", "", "", "apply"]):
             self.assertEqual(integrate.integrate(self.root, "export"), 2)
         self.assertEqual((self.root / ".env").read_bytes(), original)
         self.assertEqual(run.call_count, 2)

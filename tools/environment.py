@@ -10,7 +10,7 @@ import shutil
 import socket
 import subprocess
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from tools import layout
+from tools import layout, timezones
 
 
 # Select fields at the Docker API boundary; Config.Env never leaves the daemon.
@@ -42,19 +42,8 @@ def discover(root):
              "installation": {"directory": str(root), "config": (root / "config/local.json").is_file(),
                               "env": (root / ".env").is_file(), "draft": layout.state_path(root, ".stolas-draft.json").is_file()}}
     facts["permissions"] = layout.access_report(root)
-    zone = os.environ.get("TZ")
-    try:
-        if not zone and Path("/etc/timezone").is_file():
-            zone = Path("/etc/timezone").read_text().strip()
-        if not zone:
-            localtime = str(Path("/etc/localtime").resolve())
-            if "/zoneinfo/" in localtime:
-                zone = localtime.split("/zoneinfo/", 1)[1]
-        if zone:
-            ZoneInfo(zone)
-        facts["timezone"] = zone
-    except (OSError, ValueError, ZoneInfoNotFoundError):
-        facts["timezone"] = None
+    zone = timezones.discover()
+    facts.update(timezone=zone["name"], timezone_source=zone["source"], timezone_error=zone["error"])
     if facts["tools"]["ip"]:
         result = command(["ip", "-j", "-4", "address", "show"])
         try:
