@@ -142,6 +142,17 @@ class IntegrationTests(unittest.TestCase):
             self.connect(())
         self.assertFalse(self.calls)
 
+    def test_workflow_propagates_selected_timezone_to_summary_formatter(self):
+        options = {**self.options, "timezone": "Europe/Moscow", "notification_mode": "daily_summary"}
+        workflow = integrate.workflow(ROOT, options)
+        nodes = {node["name"]: node for node in workflow["nodes"]}
+        self.assertEqual(workflow["settings"]["timezone"], "Europe/Moscow")
+        self.assertFalse(nodes["Daily summary"]["disabled"])
+        for name in ("Settings", "Summary settings"):
+            settings_code = nodes[name]["parameters"]["jsCode"]
+            self.assertIn('"timezone": "Europe/Moscow"', settings_code)
+        self.assertIn("Суточный отчёт", nodes["Format summary"]["parameters"]["jsCode"])
+
     def test_export_is_inactive_and_never_needs_n8n_api_key(self):
         options = {k: v for k, v in self.options.items() if k != "key"}
         options["mode"] = "export"
