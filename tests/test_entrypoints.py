@@ -90,6 +90,22 @@ class EntrypointTests(unittest.TestCase):
         self.assertFalse((self.binary / "stolas").exists())
         self.assertFalse(entrypoints.read(self.root))
 
+    def test_system_command_removal_requires_rights_before_any_docker_mutation(self):
+        record = self.install()
+        docker = DockerFixture()
+        with patch.object(resources.environment, "command", side_effect=docker), patch.object(resources, "command", return_value=["docker"]), patch.object(entrypoints.os, "access", return_value=False), patch("builtins.input", side_effect=["remove", "confirm"]), self.assertRaisesRegex(RuntimeError, "Нет прав на удаление команды"):
+            manage.uninstall(self.root)
+        self.assertTrue(entrypoints.owned(self.root, record))
+        self.assertFalse(any(c[0] in ("stop", "rm") or c[:2] in (["image", "rm"], ["volume", "rm"]) for c in docker.calls))
+        self.assertFalse(resources.load(self.root, "resources.json").get("uninstalled"))
+
+    @unittest.skipUnless(hasattr(os, "chown"), "POSIX metadata owner after sudo")
+    def test_sudo_command_setup_retains_metadata_owner_of_installation(self):
+        parent = (self.root / ".stolas/state").stat()
+        with patch.object(entrypoints.os, "geteuid", return_value=0), patch.object(entrypoints.os, "chown") as chown:
+            self.install()
+        chown.assert_called_once_with(entrypoints.state_path(self.root), parent.st_uid, parent.st_gid)
+
     def test_user_without_sudo_manual_path_decline_and_explicit_system_confirmation(self):
         userbin = self.home / ".local/bin"
         with patch.object(Path, "home", return_value=self.home), patch.dict(os.environ, {"PATH": str(userbin)}), patch("builtins.input", side_effect=[""]):

@@ -149,6 +149,7 @@ def uninstall(root, purge=False):
         current = removal_plan(root, docker)
         if current != plan:
             raise RuntimeError("Ресурсы изменились во время подтверждения. Повторите удаление")
+        entrypoints.check_removal(root)
         retired = preserve_legacy_manager(root) if not purge else set()
         resources.save(root, "resources.json", {"project": plan["project"], "instance": plan["instance"], "volume": plan["volume"], "images": plan["images"], "uninstalled": True})
         for item in plan["containers"]:

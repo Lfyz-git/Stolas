@@ -18,6 +18,17 @@ def read(root):
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 
 
+def write_state(root, record):
+    from tools.deploy import atomic_json
+    path = state_path(root)
+    atomic_json(path, record)
+    # sudo may create the system wrapper for a user-owned installation. Keep
+    # its private metadata readable by that installation's owner afterwards.
+    if hasattr(os, "chown") and getattr(os, "geteuid", lambda: -1)() == 0:
+        parent = path.parent.stat()
+        os.chown(path, parent.st_uid, parent.st_gid)
+
+
 def content(root):
     target = shlex.quote(str(Path(root).absolute() / "stolas"))
     message = shlex.quote("Установка Stolas не найдена: " + str(root) + ". Повторите установку.")
@@ -40,7 +51,6 @@ def in_path(directory):
 
 def install(root, directory=None, name="stolas"):
     from tools import layout
-    from tools.deploy import atomic_json
     root = Path(root).absolute()
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}", name):
         raise ValueError("Имя команды: 1–63 латинских букв, цифр, _ или -")
@@ -72,7 +82,7 @@ def install(root, directory=None, name="stolas"):
             file.flush()
             os.chmod(destination, 0o755)
             os.fsync(file.fileno())
-        atomic_json(state_path(root), record)
+        write_state(root, record)
     except BaseException:
         actual = destination.lstat() if destination.exists() else None
         if actual and not destination.is_symlink() and (actual.st_dev, actual.st_ino) == (created.st_dev, created.st_ino):
@@ -81,8 +91,15 @@ def install(root, directory=None, name="stolas"):
     return record
 
 
+def check_removal(root):
+    record = read(root)
+    if record.get("path") and owned(root, record) and not os.access(Path(record["path"]).parent, os.W_OK | os.X_OK):
+        raise RuntimeError("Нет прав на удаление команды " + record["path"] + ". Повторите удаление с sudo и абсолютным путём к " + str(Path(root) / "stolas"))
+
+
 def remove(root):
     from tools.terminal import ui
+    check_removal(root)
     record = read(root)
     if record.get("path"):
         path = Path(record["path"])
@@ -110,8 +127,7 @@ def configure(root, scope=None, name=None):
     LABELS.update(user="Для этой учётной записи (~/.local/bin)", system="Для всех пользователей (/usr/local/bin)")
     scope = scope or choice("Где разместить команду?", ("user", "system", "later"), "user" if in_path(user_directory) else "later")
     if scope == "later":
-        from tools.deploy import atomic_json
-        atomic_json(state_path(root), {"declined": True})
+        write_state(root, {"declined": True})
         terminal.line("Позже: ./stolas command install")
         return
     directory = user_directory if scope == "user" else Path("/usr/local/bin")
