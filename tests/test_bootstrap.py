@@ -56,14 +56,15 @@ else:
             "tools/resources.py": (ROOT / "tools/resources.py").read_bytes(),
             "stolas": (ROOT / "stolas").read_bytes(),
             "tools/install.py": b'''import pathlib, sys, os
-if '--diagnose' in sys.argv:
-    print('read-only diagnostics')
-    sys.exit(0)
-print('Wizard answer: ', end='', flush=True)
-answer = input()
-pathlib.Path('wizard-answer').write_text(answer)
-pathlib.Path('wizard-args').write_text(' '.join(sys.argv[1:]))
-sys.exit(int(os.getenv('STOLAS_TEST_WIZARD_EXIT', '0')))
+LABELS = {}
+def choice(label, values, default):
+    return input() or default
+if __name__ == '__main__':
+    print('Wizard answer: ', end='', flush=True)
+    answer = input()
+    pathlib.Path('wizard-answer').write_text(answer)
+    pathlib.Path('wizard-args').write_text(' '.join(sys.argv[1:]))
+    sys.exit(int(os.getenv('STOLAS_TEST_WIZARD_EXIT', '0')))
 ''',
             "fixture-unused.sh": b'''#!/bin/sh
 printf 'Wizard answer: '

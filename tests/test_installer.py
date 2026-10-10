@@ -124,6 +124,8 @@ class InstallerTests(unittest.TestCase):
         shutil.copy2(ROOT / "tools/deploy.py", self.root / "tools/deploy.py")
         shutil.copy2(ROOT / "tools/environment.py", self.root / "tools/environment.py")
         shutil.copy2(ROOT / "tools/terminal.py", self.root / "tools/terminal.py")
+        shutil.copy2(ROOT / "tools/layout.py", self.root / "tools/layout.py")
+        shutil.copy2(ROOT / "stolas", self.root / "stolas")
         shutil.copy2(ROOT / "install.sh", self.root / "install.sh")
         shutil.copy2(ROOT / "compose.yaml", self.root / "compose.yaml")
         bindir = self.root / "bin"
@@ -143,13 +145,14 @@ elif "exec" in sys.argv:
         answers = ["", "192.0.2.1/32", "apply"]
         env = installer.clean_env()
         env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
-        result = subprocess.run(["sh", "install.sh", "--configure-only"], cwd=self.root, env=env, input="\n".join(answers) + "\n", capture_output=True, text=True, timeout=30)
+        destination = self.root / "runtime"
+        result = subprocess.run(["sh", "install.sh", "--target", str(destination), "--configure-only"], cwd=self.root, env=env, input="\n".join(answers) + "\n", capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        calls = [json.loads(line) for line in (destination / "calls.jsonl").read_text().splitlines()]
         self.assertFalse(any("exec" in call or "up" in call for call in calls))
-        actual = installer.validated(self.root / "config/local.json")
+        actual = installer.validated(destination / "config/local.json")
         self.assertEqual({k: v for k, v in actual.items() if k != "node"}, {k: v for k, v in self.cfg.items() if k != "node"})
-        self.assertEqual((self.root / ".env").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((destination / ".env").stat().st_mode & 0o777, 0o600)
         self.assertNotIn("STOLAS_API_TOKEN=", result.stdout)
 
     def test_overrides_do_not_change_generated_configuration(self):
