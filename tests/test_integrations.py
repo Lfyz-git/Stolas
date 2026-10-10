@@ -269,6 +269,7 @@ class RealN8nTests(unittest.TestCase):
         def docker(*args):
             return subprocess.run(["docker", *args], capture_output=True, text=True, check=True, timeout=120).stdout.strip()
         docker("run", "-d", "--name", name, "-p", "127.0.0.1::5678",
+               "-e", "TZ=Etc/UTC", "-e", "GENERIC_TIMEZONE=Etc/UTC",
                "-e", "N8N_ENCRYPTION_KEY=isolated-fixture-only-never-deployed",
                "-e", "N8N_DIAGNOSTICS_ENABLED=false", "-e", "N8N_VERSION_NOTIFICATIONS_ENABLED=false",
                "-e", "N8N_PERSONALIZATION_ENABLED=false", "-e", "N8N_SECURE_COOKIE=false", image)
@@ -295,7 +296,9 @@ class RealN8nTests(unittest.TestCase):
         # This is fixture setup in a disposable instance, never the user's n8n.
         rest("/rest/owner/setup", {"email": "ci@example.test", "firstName": "Stolas", "lastName": "CI", "password": "FixtureOnlyN8n123!"})
         key = rest("/rest/api-keys", {"label": "Stolas integration test", "scopes": ["credential:list", "credential:create", "workflow:create", "workflow:read"], "expiresAt": None})["rawApiKey"]
-        options = dict(mode="api", endpoint="http://127.0.0.1:8080", url=base, key=key, chat_id="123", hours=3, timezone="Etc/UTC")
+        # Different from the disposable n8n container's UTC default: the host
+        # zone already verified by the wizard must survive the actual API import.
+        options = dict(mode="api", endpoint="http://127.0.0.1:8080", url=base, key=key, chat_id="123", hours=3, timezone="Europe/Moscow")
         for kind, values in (("telegramApi", {"accessToken": "123:fixture-not-a-real-bot", "baseUrl": "https://api.telegram.org"}), ("httpHeaderAuth", {"name": "Authorization", "value": "Bearer " + "a" * 40})):
             integrate.request_json(base + "/api/v1", "/credentials", key, {"name": "Existing " + kind, "type": kind, "data": values}, n8n=True)
         before = integrate.list_credentials(options)
@@ -306,6 +309,9 @@ class RealN8nTests(unittest.TestCase):
             workflow = integrate.request_json(base + "/api/v1", "/workflows/" + state["workflow_id"], key, n8n=True)
         secret.assert_not_called()
         self.assertFalse(workflow["active"])
+        self.assertEqual(workflow["settings"]["timezone"], "Europe/Moscow")
+        for settings_node in (n for n in workflow["nodes"] if n["name"] in ("Settings", "Summary settings")):
+            self.assertIn('"timezone": "Europe/Moscow"', settings_node["parameters"]["jsCode"])
         after = integrate.list_credentials(options)
         self.assertEqual({c["id"] for c in before}, {c["id"] for c in after})
         tg = next(c for c in before if c["type"] == "telegramApi")
