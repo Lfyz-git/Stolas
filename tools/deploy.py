@@ -237,6 +237,8 @@ def restore(target, backup, preserve_manager=False):
                 if not path.is_file():
                     raise RuntimeError("Команда управления повреждена; повторите обновление перед откатом")
                 keep[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    from tools import resources
+    images = resources.load(target, "resources.json").get("images", {}) if keep else {}
     for name, existed in state["files"].items():
         if name in keep:
             continue
@@ -255,6 +257,9 @@ def restore(target, backup, preserve_manager=False):
             path.unlink()
     previous = state["previous_manifest"]
     if keep:
+        # Retain ownership of images built by newer Core versions as well.
+        restored = resources.load(target, "resources.json")
+        resources.save(target, "resources.json", {**restored, "images": {**images, **restored.get("images", {})}})
         previous = {**previous, "files": sorted(set(previous.get("files", [])) | set(keep)),
                     "hashes": {**previous.get("hashes", {}), **keep}, "management_version": layout.VERSION}
     atomic_json(target / ".stolas/state/managed.json", previous)
@@ -361,7 +366,7 @@ def deploy(source, target, ref="checkout", digest="", action=None, configure_onl
             return code
         except BaseException:
             if backup:
-                rollback_files(target, backup, configure_only)
+                rollback_files(target, backup, configure_only, preserve_manager=action == "rollback")
                 atomic_json(journal, {"phase": "rolled_back", "backup": backup.relative_to(target).as_posix(), "configured": configured})
             raise
 

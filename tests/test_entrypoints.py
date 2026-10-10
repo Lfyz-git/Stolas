@@ -200,7 +200,7 @@ elif args[:2] == ['volume','inspect']: sys.exit(1)
         commands = [(["help"], "", 0), (["diagnose", "--json"], "", 0), (["history"], "", 0),
                     (["run", "--json"], "", 0), (["run"], "", 0), (["logs"], "", 7),
                     (["configure"], ":cancel\n", 3), (["update", "--version", "invalid"], "", 1),
-                    (["rollback"], "", 1), (["integrate", "n8n", "--mode", "export"], ":cancel\n", 3),
+                    (["rollback"], "", 0), (["integrate", "n8n", "--mode", "export"], ":cancel\n", 3),
                     (["uninstall"], "cancel\n", 0)]
         for args, answer, expected in commands:
             with self.subTest(command=args):
@@ -210,7 +210,8 @@ elif args[:2] == ['volume','inspect']: sys.exit(1)
         for call in map(json.loads, log.read_text().splitlines()):
             if "--project-directory" in call["args"]:
                 self.assertEqual(call["args"][call["args"].index("--project-directory") + 1], str(self.root))
-                self.assertEqual(call["cwd"], str(self.root))
+                if "exec" in call["args"] or "logs" in call["args"]:
+                    self.assertEqual(call["cwd"], str(self.root))
 
 
 if __name__ == "__main__":

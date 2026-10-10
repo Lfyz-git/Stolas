@@ -194,6 +194,8 @@ class RuntimeDockerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(wrapper.exists())
         self.assertIsNotNone(resources.volume_info(self.root, ["docker"], volume))
+        self.assertIsNone(resources.image_info(self.root, ["docker"], "stolas:0.5.1"))
+        self.assertIsNone(resources.image_info(self.root, ["docker"], "stolas:0.5.0"))
         self.assert_neighbour()
         wrapper = Path(entrypoints.install(self.root, binary)["path"])
         result = cli(["uninstall", "--purge"], "УДАЛИТЬ\n")
