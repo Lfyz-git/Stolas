@@ -151,7 +151,7 @@ class DiscoveryTests(unittest.TestCase):
         install.print_facts(facts)
         with patch.object(manage.environment, "discover", return_value=facts), patch("sys.argv", ["stolas", "--root", str(self.root), "diagnose"]):
             self.assertEqual(manage.main(), 0)
-        for phrase in ("текущая учётная запись", "полномочия root", "новый вход в сессию"):
+        for phrase in ("текущая учётная запись", "потребоваться sudo", "ручная настройка доступа"):
             self.assertEqual(" ".join(self.output.getvalue().split()).count(phrase), 2)
         self.assertFalse(any(part in ("usermod", "chmod", "chown", "install", "create") for command in self.commands for part in command))
 
