@@ -14,7 +14,7 @@ from tools import layout, timezones
 
 
 # Select fields at the Docker API boundary; Config.Env never leaves the daemon.
-CONTAINER_FORMAT = '''{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Config.Image}},"command":{{json .Config.Cmd}},"running":{{json .State.Running}},"mode":{{json .HostConfig.NetworkMode}},"networks":{{json .NetworkSettings.Networks}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"directory":{{json (index .Config.Labels "com.docker.compose.project.working_dir")}}}'''
+CONTAINER_FORMAT = '''{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Config.Image}},"command":{{json .Config.Cmd}},"running":{{json .State.Running}},"mode":{{json .HostConfig.NetworkMode}},"ports":{{json .NetworkSettings.Ports}},"networks":{{json .NetworkSettings.Networks}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"directory":{{json (index .Config.Labels "com.docker.compose.project.working_dir")}}}'''
 NETWORK_FORMAT = '''{"id":{{json .Id}},"name":{{json .Name}},"driver":{{json .Driver}},"internal":{{json .Internal}},"ipam":{{json .IPAM.Config}},"bridge":{{json (index .Options "com.docker.network.bridge.name")}}}'''
 
 
@@ -37,7 +37,7 @@ def discover(root):
     root = Path(root).absolute()
     facts = {"hostname": socket.gethostname(), "tools": {name: bool(shutil.which(name)) for name in ("docker", "ip", "curl", "wget", "tar", "python3", "apt-get", "sudo")},
              "system": platform.system(), "architecture": platform.machine(),
-             "addresses": [], "n8n": [], "stolas": [], "networks": {}, "warnings": [],
+             "addresses": [], "n8n": [], "stolas": [], "networks": {}, "warnings": [], "port_bindings": [],
              "docker": {"available": False, "command": [], "reason": "Docker не установлен", "access_status": "missing", "requires_sudo": False},
              "installation": {"directory": str(root), "config": (root / "config/local.json").is_file(),
                               "env": (root / ".env").is_file(), "draft": layout.state_path(root, ".stolas-draft.json").is_file()}}
@@ -122,7 +122,11 @@ def discover(root):
             cmd = container.pop("command", None) or []
             if not container.get("running"):
                 continue
-            if container.get("service") == "stolas" and container.get("directory") and Path(container["directory"]).resolve() == root.resolve():
+            ours = container.get("service") == "stolas" and container.get("directory") and Path(container["directory"]).resolve() == root.resolve()
+            for bindings in (container.pop("ports", None) or {}).values():
+                for binding in bindings or []:
+                    facts["port_bindings"].append({"address": binding["HostIp"], "port": int(binding["HostPort"]), "owned": bool(ours)})
+            if ours:
                 facts["stolas"].append(container)
             image = container.get("image", "").split("@")[0]
             hints = " ".join(str(container.get(k) or "") for k in ("name", "service")).lower()

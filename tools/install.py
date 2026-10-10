@@ -332,6 +332,11 @@ def select_named(label, items, names, default=0, automatic=True):
 
 def propose_port(api, facts, root):
     address, initial = api["STOLAS_LISTEN"], int(api["STOLAS_PORT"])
+    if (root / ".env").is_file():
+        saved = read_api(root)
+        if saved["STOLAS_LISTEN"] == address and saved["STOLAS_PORT"] == str(initial):
+            ui().line(f"Сохранённый endpoint {address}:{initial} не изменяется автоматически.")
+            return
     for port in range(initial, min(65536, initial + 100)):
         state = environment.port_state(address, port)
         if state == "free":
@@ -339,21 +344,29 @@ def propose_port(api, facts, root):
                 ui().result(f"Порт {initial} занят. Предлагается свободный порт {port}.", "warning")
             api["STOLAS_PORT"] = str(port)
             return
-        if state == "busy" and port == initial and facts["stolas"] and (root / ".env").exists():
-            try:
-                old = read_api(root)
-                if old["STOLAS_PORT"] == str(port) and old["STOLAS_LISTEN"] == address:
-                    reply = request_json(f"http://{address}:{port}", "/healthz", old["STOLAS_API_TOKEN"])
-                    if reply.get("status") == "ready":
-                        ui().line(f"Существующий Stolas использует порт {port}; он сохранён.")
-                        return
-            except (ValueError, RuntimeError):
-                pass
         if state == "not_local":
             raise ValueError(f"Адрес {address} отсутствует на Linux-хосте. Повторите обнаружение или выберите другую схему подключения")
         if state == "denied":
             raise ValueError(f"ОС не разрешает привязку к {address}:{port}; выберите непривилегированный порт в разделе api")
     raise ValueError(f"Нет свободного порта в диапазоне {initial}–{min(65535, initial + 99)}; измените порт в разделе api")
+
+
+def check_api_port(api, facts, allow_existing=False):
+    """Before stopping the old service: distinguish verified ownership from unknown."""
+    address, port = api["STOLAS_LISTEN"], int(api["STOLAS_PORT"])
+    if not facts["docker"]["available"]:
+        raise RuntimeError(facts["docker"]["reason"] + ". Старый сервис не остановлен; восстановите доступ к Docker")
+    bindings = [b for b in facts.get("port_bindings", []) if b["port"] == port and b["address"] in (address, "0.0.0.0", "::", "")]
+    if any(not b["owned"] for b in bindings):
+        raise RuntimeError(f"Конфликт {address}:{port} подтверждён Docker: порт опубликован посторонним контейнером. Старый Stolas не остановлен; освободите endpoint или явно измените настройку")
+    state = environment.port_state(address, port)
+    if state == "free":
+        return
+    if state == "busy" and allow_existing and facts.get("stolas"):
+        return  # /healthz failure is not evidence of foreign ownership.
+    if state == "busy":
+        raise RuntimeError(f"Endpoint {address}:{port} занят, но принадлежность слушателя не подтверждена. Старый сервис не остановлен; проверьте Docker, ss и повторите диагностику. Порт автоматически не меняется")
+    raise RuntimeError(f"Не удалось проверить привязку {address}:{port}: {state}. Старый сервис не остановлен")
 
 
 def save_draft(root, plan):
@@ -455,10 +468,11 @@ def collect_plan(root, existing, facts, reuse=False):
             draft.unlink()
     stages = [] if reuse or configured else [s for s in ("wan",) if s not in plan["completed"]]
     position = 0
-    try:
-        propose_port(plan["api"], facts, root)
-    except ValueError as error:
-        ui().result(str(error), "warning")
+    if not reuse:
+        try:
+            propose_port(plan["api"], facts, root)
+        except ValueError as error:
+            ui().result(str(error), "warning")
     while True:
         section = stages[position] if position < len(stages) else None
         try:
@@ -472,13 +486,9 @@ def collect_plan(root, existing, facts, reuse=False):
                     if plan["config"]["route"]["mode"] == "required" and not plan["config"]["route"]["expected_public_cidrs"]:
                         raise ValueError("Укажите разрешённый IP основного канала в разделе «Проверка интернет-канала»")
                     validate_plan(plan)
-                    if not facts["docker"]["available"] and shutil.which("docker"):
-                        raise ValueError(facts["docker"]["reason"] + ". Исправьте причину и выберите «Повторить обнаружение»")
                     before = copy.deepcopy(plan["api"])
-                    propose_port(plan["api"], facts, root)
-                    if reuse and plan["api"] != before:
-                        plan["api"] = before
-                        raise RuntimeError("Порт занят другим сервисом. Используйте повторную настройку")
+                    if not reuse:
+                        propose_port(plan["api"], facts, root)
                     if plan["api"] != before:
                         ui().result("Порт изменился; проверьте сводку ещё раз.", "warning")
                         continue
@@ -659,6 +669,9 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
     existing = validated(current) if current.exists() else copy.deepcopy(DEFAULT)
     facts = environment.discover(root)
     print_facts(facts)
+    if not configure_only and not facts["docker"]["available"] and (facts.get("tools", {}).get("docker") or shutil.which("docker")):
+        raise RuntimeError(facts["docker"]["reason"] + ". Мастер остановлен до настройки: восстановите доступ к Docker и повторите команду; доступ через sudo -n также проверен")
+    old_api = read_api(root) if (root / ".env").is_file() else None
     plan = {"config": existing, "api": read_api(root), "completed": []} if recover else collect_plan(root, existing, facts, reuse)
     validate_plan(plan)
     cfg, api = plan["config"], plan["api"]
@@ -693,6 +706,8 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
     run(compose + ["build", "stolas"], root)
     ui().result("образ собран")
     run(compose + ["run", "--rm", "--no-deps", "stolas", "validate"], root)
+    same_endpoint = old_api and all(old_api[k] == api[k] for k in ("STOLAS_LISTEN", "STOLAS_PORT"))
+    check_api_port(api, environment.discover(root), allow_existing=bool(same_endpoint))
     if layout.runtime(root):
         from tools import resources
         resources.activate(root, compose[:compose.index("compose")])
