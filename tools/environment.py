@@ -89,9 +89,7 @@ def discover(root):
     access = {"access_status": "permission_denied" if permission else "unavailable" if result.returncode else "direct", "requires_sudo": False}
     if permission:
         access["access_warning"] = ("Docker установлен, но текущая учётная запись не имеет доступа к Docker socket. "
-            "Для команд Stolas может потребоваться sudo (с абсолютным путём к ./stolas) либо ручная настройка доступа. "
-            "Группа docker предоставляет полномочия root; после изменения групп нужен новый вход в сессию. "
-            "Установщик не меняет группы или права сокета.")
+            "Для команд Stolas может потребоваться sudo (с абсолютным путём к ./stolas) либо ручная настройка доступа.")
     facts["docker"].update(access)
     if result.returncode and facts["tools"]["sudo"]:
         elevated = ["sudo", "-n", "docker"]
