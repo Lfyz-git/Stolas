@@ -146,7 +146,7 @@ def build(options=None):
     for source, target in [("Every 3 hours", "Settings"), ("Manual test", "Settings"), ("Settings", "Run Stolas"), ("Run Stolas", "Classify result"), ("Classify result", "Telegram alert"), ("Daily summary", "Summary settings"), ("Summary settings", "Read summary"), ("Read summary", "Format summary"), ("Format summary", "Telegram alert")]:
         connections[source] = {"main": [[{"node": target, "type": "main", "index": 0}]]}
     return {"name": "Stolas - 3h monitoring", "nodes": nodes, "connections": connections,
-            "active": False, "settings": {"executionOrder": "v1", "timezone": "Etc/UTC"}, "pinData": {}}
+            "active": False, "settings": {"executionOrder": "v1", "timezone": (options or {}).get("timezone", "Etc/UTC")}, "pinData": {}}
 
 
 if __name__ == "__main__":

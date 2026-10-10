@@ -1,5 +1,6 @@
 """Owned PATH wrappers; never overwrite a command or edit shell profiles."""
 import hashlib
+import errno
 import json
 import os
 from pathlib import Path
@@ -133,7 +134,7 @@ def configure(root, scope=None, name=None):
         if choice("Установить общую команду в /usr/local/bin?", ("apply", "cancel"), "cancel") != "apply":
             return
         if not os.access(directory if directory.exists() else directory.parent, os.W_OK):
-            raise PermissionError("Нет прав на /usr/local/bin. Выберите пользовательский каталог или запустите эту команду с sudo")
+            raise PermissionError(errno.EACCES, "Выберите пользовательский каталог или запустите команду с sudo", str(directory))
     candidate = name or "stolas"
     while True:
         try:

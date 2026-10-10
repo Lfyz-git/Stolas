@@ -184,6 +184,7 @@ class IntegrationTests(unittest.TestCase):
 
     def test_generator_keeps_current_russian_summary_and_timezone_formatters(self):
         from tools.build_workflow import build
+        self.assertEqual(build({"timezone": "Europe/Moscow"})["settings"]["timezone"], "Europe/Moscow")
         template = json.loads((ROOT / "n8n/stolas.json").read_text(encoding="utf-8"))
         generated = {n["name"]: n for n in build()["nodes"]}
         for node in template["nodes"]:

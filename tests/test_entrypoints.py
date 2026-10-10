@@ -127,8 +127,9 @@ class EntrypointTests(unittest.TestCase):
         with patch("builtins.input", side_effect=[""]), patch.object(entrypoints, "install") as create:
             entrypoints.configure(self.root, "system")
         create.assert_not_called()
-        with patch("builtins.input", side_effect=["apply"]), patch.object(entrypoints.os, "access", return_value=False), self.assertRaises(PermissionError):
+        with patch("builtins.input", side_effect=["apply"]), patch.object(entrypoints.os, "access", return_value=False), self.assertRaises(PermissionError) as caught:
             entrypoints.configure(self.root, "system")
+        self.assertEqual(caught.exception.filename, str(Path("/usr/local/bin")))
 
     def test_update_and_rollback_keep_owned_command_even_to_version_before_path_feature(self):
         import tarfile
