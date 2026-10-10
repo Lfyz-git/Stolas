@@ -37,8 +37,8 @@
 - Настоящие Linux PTY: установка, навигация, ошибки, удаление и диагностика;
   цветной режим, NO_COLOR и ширина 80 символов.
 
-Подтверждённый CI реализации:
-[38047948761](https://github.com/Lfyz-git/Stolas/actions/runs/38047948761).
+CI реализации:
+[38048943816](https://github.com/Lfyz-git/Stolas/actions/runs/38048943816).
 Подробности и итоговая проверка — [VALIDATION.md](../VALIDATION.md).
 
 ## Ограничения

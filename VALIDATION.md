@@ -19,8 +19,8 @@
   80 колонок, ANSI, NO_COLOR, ошибки ввода, навигация и отступы.
 - Проверены shell syntax, JSON config, workflow JavaScript, импорт трёх политик
   в n8n 2.42.6, настоящий n8n API, Alloy validate, production build, API и Compose.
-- Успешный CI реализации (0511647):
-  https://github.com/Lfyz-git/Stolas/actions/runs/38047948761
+- CI реализации (63f3619):
+  https://github.com/Lfyz-git/Stolas/actions/runs/38048943816
 - На Azazel команды не выполнялись. Публичные iperf-серверы тестами не нагружались.
   WAN/PBR/LTE маршрутизатора, удалённый n8n/Telegram, чистая установка пакетов apt
   и выполнение arm64 остаются проверками среды развёртывания.
