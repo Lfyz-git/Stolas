@@ -95,19 +95,20 @@ def access_report(root):
     names.update(".stolas/state/" + name for name in STATE_FILES)
     try:
         manifest = root / ".stolas/state/managed.json"
-        if os.access(manifest, os.R_OK):
+        if os.access(manifest, os.R_OK) and not manifest.is_symlink():
             names.update(json.loads(manifest.read_text(encoding="utf-8")).get("files", []))
     except (OSError, ValueError):
         pass
     rows = []
     expected = root.stat().st_uid if root.exists() else None
     for name in sorted(names):
-        path = root if name == "." else bounded(root, name)
+        path = root / name
         try:
+            path = root if name == "." else bounded(root, name)
             meta = path.stat()
         except FileNotFoundError:
             continue
-        except PermissionError:
+        except (PermissionError, ValueError):
             rows.append({"path": str(path), "readable": False, "writable": False, "owner_mismatch": True})
             continue
         rows.append({"path": str(path), "uid": meta.st_uid, "gid": meta.st_gid, "mode": oct(meta.st_mode & 0o777),

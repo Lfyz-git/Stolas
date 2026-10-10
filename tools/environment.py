@@ -9,7 +9,6 @@ import re
 import shutil
 import socket
 import subprocess
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from tools import layout, timezones
 
 
@@ -35,12 +34,14 @@ def ipv4(value):
 
 def discover(root):
     root = Path(root).absolute()
+    def readable_file(path):
+        return os.access(path, os.R_OK) and path.is_file()
     facts = {"hostname": socket.gethostname(), "tools": {name: bool(shutil.which(name)) for name in ("docker", "ip", "curl", "wget", "tar", "python3", "apt-get", "sudo")},
              "system": platform.system(), "architecture": platform.machine(),
              "addresses": [], "n8n": [], "stolas": [], "networks": {}, "warnings": [], "port_bindings": [],
              "docker": {"available": False, "command": [], "reason": "Docker не установлен", "access_status": "missing", "requires_sudo": False},
-             "installation": {"directory": str(root), "config": (root / "config/local.json").is_file(),
-                              "env": (root / ".env").is_file(), "draft": layout.state_path(root, ".stolas-draft.json").is_file()}}
+             "installation": {"directory": str(root), "config": readable_file(root / "config/local.json"),
+                              "env": readable_file(root / ".env"), "draft": readable_file(layout.state_path(root, ".stolas-draft.json"))}}
     facts["permissions"] = layout.access_report(root)
     zone = timezones.discover()
     facts.update(timezone=zone["name"], timezone_source=zone["source"], timezone_error=zone["error"])
