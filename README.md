@@ -8,10 +8,10 @@ Stolas измеряет скорость IPv4 TCP через iperf3, храни�
 В SSH-терминале Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.5.0/bootstrap.sh | sh -s -- --dir /opt/stolas
+curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.5.0/bootstrap.sh | sh
 ```
 
-Каталог должен принадлежать вам. Нужны Python 3.10+, `curl` или GNU `wget`,
+По умолчанию Stolas устанавливается в `~/stolas`, где пользователь может записывать файлы без `sudo`. Для другого каталога используйте `--dir PATH`, предварительно обеспечив право записи. Нужны Python 3.10+, `curl` или GNU `wget`,
 `tar`, `sha256sum` и локальный Docker с Compose. На системах с apt мастер
 предложит установить отсутствующие Python и Docker. Поддерживаются amd64 и arm64;
 сборка и выполнение в CI проверяются на amd64.
