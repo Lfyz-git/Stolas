@@ -18,10 +18,10 @@ CONTAINER_FORMAT = '''{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .C
 NETWORK_FORMAT = '''{"id":{{json .Id}},"name":{{json .Name}},"driver":{{json .Driver}},"internal":{{json .Internal}},"ipam":{{json .IPAM.Config}},"bridge":{{json (index .Options "com.docker.network.bridge.name")}}}'''
 
 
-def command(args):
+def command(args, timeout=10):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("STOLAS_", "COMPOSE_"))}
     try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=10, env=env)
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env)
     except (OSError, subprocess.TimeoutExpired):
         return subprocess.CompletedProcess(args, 1, "", "command_unavailable_or_timeout")
 

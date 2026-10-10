@@ -113,6 +113,9 @@ def read_json(path, default=None):
 
 
 def runtime_files(source):
+    if layout.runtime(source):
+        manifest = read_json(layout.bounded(source, ".stolas/state/managed.json"))
+        return {name: layout.bounded(source, name) for name in manifest.get("files", [])}
     result = {}
     for name in inventory(source):
         if name.startswith("agent/") and name.endswith(".py"):
@@ -323,7 +326,10 @@ def deploy(source, target, ref="checkout", digest="", action=None, configure_onl
                 from tools.terminal import ui
                 ui().result("Предыдущая версия восстановлена; история сохранена")
                 return 0
-            if source != target:
+            if source != target or configured and layout.runtime(target):
+                if source == target:
+                    current = read_json(target / ".stolas/state/managed.json")
+                    ref, digest = current.get("ref", ref), current.get("archive_sha256", digest)
                 backup = stage_sources(source, target, ref, digest)
             code = run_installer(target, configure_only, reuse=configured and action == "update")
             if code in (1, 3) and backup and (configured or code == 3):

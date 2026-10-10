@@ -10,6 +10,7 @@ dist/
 .docker-client/
 *.bak-*
 .stolas-*
+.stolas/
 n8n/local.json
 n8n/install-state.json
 .stolas-download.*/

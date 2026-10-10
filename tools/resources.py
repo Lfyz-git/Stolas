@@ -33,7 +33,7 @@ def command(root, docker=None):
 
 
 def call(root, docker, *args, optional=False):
-    result = environment.command(docker + list(args))
+    result = environment.command(docker + list(args), **({"timeout": 45} if args and args[0] == "stop" else {}))
     if result.returncode and not optional:
         raise RuntimeError("Docker не выполнил действие. Проверьте доступ: docker info")
     return result
@@ -44,7 +44,11 @@ def containers(root, docker):
     if not ids:
         return []
     result = call(root, docker, "inspect", "--format", CONTAINER_FORMAT, *ids)
-    return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    items = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    # Docker emits mount arrays in map order, which can differ between reads.
+    for item in items:
+        item["mounts"] = sorted(item.get("mounts", []), key=lambda mount: json.dumps(mount, sort_keys=True))
+    return sorted(items, key=lambda item: item["id"])
 
 
 def owned(item, root, instance=None):

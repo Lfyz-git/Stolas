@@ -62,6 +62,58 @@ class TerminalTests(unittest.TestCase):
         self.assertTrue(all(len(line) <= 80 for line in output.splitlines()))
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Real SSH-style PTY runs in Linux CI")
+    def test_management_real_tty_and_no_color(self):
+        import fcntl
+        import pty
+        import select
+        import struct
+        import termios
+        import time
+        for monochrome in (False, True):
+            with self.subTest(NO_COLOR=monochrome):
+                master, slave = pty.openpty()
+                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+                env = {**os.environ, "TERM": "xterm-256color", "COLUMNS": "80", "PYTHONIOENCODING": "utf-8"}
+                env.pop("NO_COLOR", None)
+                if monochrome:
+                    env["NO_COLOR"] = "1"
+                process = subprocess.Popen([sys.executable, str(ROOT / "tests/management_session.py")], stdin=slave, stdout=slave, stderr=slave, env=env)
+                os.close(slave)
+                output = bytearray()
+                try:
+                    os.write(master, b"wrong\n3\n")
+                    deadline = time.monotonic() + 20
+                    while time.monotonic() < deadline:
+                        if select.select([master], [], [], .2)[0]:
+                            try:
+                                data = os.read(master, 65536)
+                            except OSError:
+                                break
+                            if not data:
+                                break
+                            output.extend(data)
+                        elif process.poll() is not None:
+                            break
+                    self.assertEqual(process.wait(timeout=2), 0, output.decode(errors="replace"))
+                finally:
+                    if process.poll() is None:
+                        process.kill(); process.wait()
+                    os.close(master)
+                rendered = output.decode()
+                if monochrome:
+                    self.assertNotIn("\x1b", rendered)
+                else:
+                    for code in ("36", "32", "31"):
+                        self.assertIn("\x1b[" + code + "m", rendered)
+                plain = ANSI.sub("", rendered).replace("\r", "")
+                self.assertIn("STOLAS · Удаление", plain)
+                self.assertIn("STOLAS · Диагностика", plain)
+                self.assertIn("введите номер от 1 до 3", plain)
+                self.assertIn("удаление отменено", plain)
+                self.assertNotIn("a" * 40, plain)
+                self.assertTrue(all(len(line) <= 80 for line in plain.splitlines()))
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Real SSH-style PTY runs in Linux CI")
     def test_real_tty_80_columns_color_navigation_and_errors(self):
         import fcntl
         import pty

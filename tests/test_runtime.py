@@ -58,7 +58,7 @@ class DockerFixture:
         self.volumes[name] = {"name": name, "labels": {"com.docker.compose.project": "stolas-133eaddd33", "com.docker.compose.volume": "stolas-data"}, "created": "fixture-original"}
         return self.container(root, "stolas-133eaddd33", volume=name, id="old-id", version="0.4.0")
 
-    def __call__(self, args):
+    def __call__(self, args, **kwargs):
         args = args[args.index("docker") + 1:]
         self.calls.append(args)
         value, code = "", 0
@@ -157,6 +157,42 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(prompt.call_count, 1)
         self.assertEqual(resources.read_env(self.root)["STOLAS_PROJECT_NAME"], "stolas-home")
         self.assertIn(foreign, self.docker.items)
+
+    def test_container_mount_order_does_not_change_removal_plan(self):
+        self.runtime(); self.activate()
+        item = self.docker.items[0]
+        item["mounts"].append({"Type": "bind", "Source": str(self.root / "config/local.json"), "Destination": "/config/config.json"})
+        before = manage.removal_plan(self.root, ["docker"])
+        item["mounts"].reverse()
+        self.assertEqual(manage.removal_plan(self.root, ["docker"]), before)
+
+    def test_native_reconfiguration_failure_restores_settings_and_service(self):
+        self.runtime(); self.activate()
+        original = (self.root / ".env").read_bytes()
+        def fail(*args, **kwargs):
+            install.write_private(self.root / ".env", (self.root / ".env").read_text().replace("8080", "8081"))
+            self.activate()
+            return 1
+        def restart(root, docker):
+            self.assertEqual((root / ".env").read_bytes(), original)
+            env = resources.read_env(root)
+            self.docker.container(root, env["STOLAS_PROJECT_NAME"], env["STOLAS_INSTANCE_ID"], env["STOLAS_DATA_VOLUME"], id="restored-id")
+        # Real Docker creates a new container ID after each handover.
+        self.docker.items[0]["id"] = "original-id"
+        with patch.object(deploy, "run_installer", side_effect=fail), patch.object(resources, "restart", side_effect=restart) as recovered:
+            self.assertEqual(deploy.deploy(self.root, self.root, action="reconfigure"), 1)
+        recovered.assert_called_once()
+        self.assertEqual((self.root / ".env").read_bytes(), original)
+        self.assertEqual([c["id"] for c in self.docker.items], ["restored-id"])
+
+    def test_partial_installation_can_be_uninstalled_without_a_container(self):
+        self.runtime()
+        resources.configure(self.root, ["docker"])
+        name = resources.read_env(self.root)["STOLAS_DATA_VOLUME"]
+        with patch("builtins.input", side_effect=["1", "1"]):
+            self.assertEqual(manage.uninstall(self.root), 0)
+        self.assertIn(name, self.docker.volumes)
+        self.assertFalse(self.docker.items)
 
     def test_volume_collision_also_requests_another_name(self):
         self.runtime()

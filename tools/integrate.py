@@ -273,7 +273,8 @@ def integrate(root, mode=None):
                 options["summary_hour"] = ask("Час сводки", previous.get("summary_hour", 9), integer(0, 23)) if options["notification_mode"] == "daily_summary" else 9
                 if selected_mode == "api":
                     options["url"] = ask("Адрес n8n", previous.get("url", ""), url)
-                    options["key"] = ask("API key, созданный вами в n8n", "", matching(r"[^\s]+"), secret=True)
+                    ui().line("Ключ будет виден при вставке. Он используется только сейчас и не сохраняется.")
+                    options["key"] = ask("API key, созданный вами в n8n", "", matching(r"[^\s]+"))
                 ui().stage("Проверьте подключение")
                 ui().line("Адрес Stolas: " + options["endpoint"])
                 if api != original:
@@ -306,7 +307,8 @@ def integrate(root, mode=None):
                 safe = {k: v for k, v in options.items() if k not in ("key", "bot_token")}
                 write_private(settings, json.dumps(safe, ensure_ascii=False, indent=2) + "\n")
                 connected = connect_n8n(root, options, api, data)
-                ui().line("Импорт: n8n/local.json. Выберите Header Auth и Telegram credential в n8n.")
+                ui().line("Импорт: " + str(layout.integration_path(root, "local.json")))
+                ui().line("Выберите Header Auth и Telegram credential в n8n.")
                 ui().line("Выполните Manual test; затем включите расписание.")
                 return 0 if connected else 2
             except Back:
@@ -314,7 +316,8 @@ def integrate(root, mode=None):
             except Rescan:
                 facts = environment.discover(root)
             except (ValueError, RuntimeError):
-                ui().result("Подключение не завершено. Core продолжает работать. Импортируйте n8n/local.json вручную или повторите команду.", "warning")
+                ui().result("Подключение не завершено. Core продолжает работать.", "warning")
+                ui().line("Импортируйте файл вручную: " + str(layout.integration_path(root, "local.json")))
                 return 2
 
 
