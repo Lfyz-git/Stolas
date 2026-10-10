@@ -626,6 +626,9 @@ def first_test(compose, root):
         ui().line()
         ui().line("Измерение продолжено; внешний маршрут к серверу не подтверждён.")
     reasons = {error.get("reason") for error in data.get("errors", [])} | {error for attempt in data.get("attempts", []) for error in attempt.get("errors", [])}
+    primary = data.get("primary") or {}
+    if primary.get("valid") and primary.get("download") and primary.get("upload") and data["status"] not in ("unavailable", "route_blocked"):
+        reasons.discard("server_busy")
     explanations = {"route_unconfigured": "Укажите разрешённый внешний IP основного подключения.",
                     "route_public_ip_mismatch": "Внешний IP не совпал с разрешёнными адресами. Проверьте подключение и настройки канала.",
                     "route_verification_unavailable": "Не удалось проверить внешний IP. Проверьте доступ к HTTPS-источникам.",
