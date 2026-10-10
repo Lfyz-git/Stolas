@@ -93,7 +93,10 @@ class EntrypointTests(unittest.TestCase):
     def test_system_command_removal_requires_rights_before_any_docker_mutation(self):
         record = self.install()
         docker = DockerFixture()
-        with patch.object(resources.environment, "command", side_effect=docker), patch.object(resources, "command", return_value=["docker"]), patch.object(entrypoints.os, "access", return_value=False), patch("builtins.input", side_effect=["remove", "confirm"]), self.assertRaisesRegex(RuntimeError, "Нет прав на удаление команды"):
+        real_access = os.access
+        def access(path, mode):
+            return False if Path(path) == Path(record["path"]).parent else real_access(path, mode)
+        with patch.object(resources.environment, "command", side_effect=docker), patch.object(resources, "command", return_value=["docker"]), patch.object(entrypoints.os, "access", side_effect=access), patch("builtins.input", side_effect=["remove", "confirm"]), self.assertRaisesRegex(RuntimeError, "Нет прав на удаление команды"):
             manage.uninstall(self.root)
         self.assertTrue(entrypoints.owned(self.root, record))
         self.assertFalse(any(c[0] in ("stop", "rm") or c[:2] in (["image", "rm"], ["volume", "rm"]) for c in docker.calls))
