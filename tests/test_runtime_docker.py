@@ -173,8 +173,8 @@ class RuntimeDockerTests(unittest.TestCase):
         wrapper = Path(entrypoints.install(self.root, binary)["path"])
         with patch.object(deploy, "run_installer", side_effect=self.installer):
             self.assertEqual(deploy.deploy(ROOT, self.root, ref="v0.5.1", action="update"), 0)
-        # Roll back the repeated update, then explicitly restore the frozen v0.5.0
-        # snapshot to cover a release without entrypoint ownership support.
+        # Select the first update's frozen v0.5.0 snapshot after exercising a
+        # repeated update, covering a release without PATH ownership support.
         backups = sorted((self.root / ".stolas/backups/transactions").iterdir())
         previous = next(p for p in backups if deploy.read_json(p / "state.json").get("previous_manifest", {}).get("ref") == "v0.5.0")
         deploy.atomic_json(self.root / ".stolas/state/transaction.json", {"phase": "complete", "backup": previous.relative_to(self.root).as_posix(), "configured": True})

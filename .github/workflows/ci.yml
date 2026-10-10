@@ -46,7 +46,7 @@ jobs:
         run: docker run --rm --network none -e LOKI_URL=http://loki.example.test:3100/loki/api/v1/push -v "$PWD/examples/stolas.alloy:/etc/alloy/config.alloy:ro" grafana/alloy:v1.20.0@sha256:f111cce835516c5f99166342be7038496b52ced16667be5a11e19258a3e4cd30 validate /etc/alloy/config.alloy
       - run: python3 -m agent validate --config config/example.json
       - run: docker build --tag stolas:ci .
-      - name: Migrate real v0.4.0, preserve SQLite, roll back and uninstall
+      - name: Migrate v0.4.0 and v0.5.0, preserve SQLite, roll back and uninstall
         env:
           STOLAS_RUNTIME_DOCKER: '1'
         run: python3 -m unittest discover -s tests -p test_runtime_docker.py -v
