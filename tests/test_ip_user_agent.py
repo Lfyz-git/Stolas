@@ -287,6 +287,9 @@ class LocalHttpsProbeTests(unittest.TestCase):
     def test_session_dns_timeout_preserves_classification_and_next_resolution(self):
         self.child_environment(stalled_host=True)
         with ProbeSession() as session:
+            # Start the worker first so this specifically exercises an in-flight
+            # resolver timeout, rather than a legitimate startup-budget expiry.
+            self.assertEqual(probes.resolve("127.0.0.1", timeout=5), "127.0.0.1")
             started = time.monotonic()
             with self.assertRaisesRegex(probes.ProbeError, "dns_error"):
                 probes.resolve("stalled.example.test", timeout=.5)
