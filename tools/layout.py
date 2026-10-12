@@ -4,7 +4,7 @@ import errno
 import json
 from pathlib import Path
 
-VERSION = "0.6.2"
+VERSION = "0.6.3"
 
 
 def runtime(root):

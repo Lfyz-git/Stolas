@@ -685,7 +685,7 @@ def request_json(base, path, token, body=None, n8n=False):
         raise RuntimeError("Сервис недоступен; проверьте URL, TLS и сетевой доступ.") from None
 
 
-def install(root=ROOT, configure_only=False, reuse=False, recover=False):
+def install(root=ROOT, configure_only=False, reuse=False, recover=False, skip_first_test=False):
     layout.preflight(root)
     current = root / "config/local.json"
     existing = validated(current) if current.exists() else copy.deepcopy(DEFAULT)
@@ -741,7 +741,11 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
     ui().result("API отвечает, авторизация проверена")
     if layout.runtime(root):
         resources.complete(root, compose[:compose.index("compose")])
-    if reuse:
+    if skip_first_test:
+        result = None
+        from tools.diagnostics import command
+        print("Настройки применены, сервис и API проверены. Тест скорости можно запустить отдельно: " + command(root, "run"))
+    elif reuse:
         result = None
         print("Сервис обновлён; конфигурация и история сохранены. Дополнительный нагрузочный тест не запускался.")
     elif measured:
@@ -805,6 +809,7 @@ def main():
     parser.add_argument("--configure-only", action="store_true", help="только записать настройки без установки и тестирования")
     parser.add_argument("--reuse-config", action="store_true", help="сохранить настройки при обновлении")
     parser.add_argument("--recover", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--skip-first-test", action="store_true", help="применить настройки и проверить сервис без нагрузочного теста")
     parser.add_argument("--diagnose", action="store_true", help="обнаружение без изменений, JSON без секретов")
     parser.add_argument("--root", type=Path, default=ROOT, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -816,7 +821,7 @@ def main():
         if args.diagnose:
             print(json.dumps(environment.discover(args.root), ensure_ascii=False, indent=2))
             return 0
-        return install(root=args.root, configure_only=args.configure_only, reuse=args.reuse_config, recover=args.recover)
+        return install(root=args.root, configure_only=args.configure_only, reuse=args.reuse_config, recover=args.recover, skip_first_test=args.skip_first_test)
     except Cancel:
         ui().result("Установка отменена")
         return 3

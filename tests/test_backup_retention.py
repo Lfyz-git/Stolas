@@ -94,7 +94,7 @@ class BackupRetentionTests(unittest.TestCase):
         self.prune()
         self.assertTrue(paths[0].is_dir())
         self.assertEqual(self.names(), {path.name for path in [paths[0], *paths[-3:]]})
-        self.assertIn("безопасная очистка", self.output.getvalue())
+        self.assertIn("очистка", " ".join(self.output.getvalue().split()))
 
     def test_legacy_order_is_utc_and_stable(self):
         path = self.snapshot(1)
@@ -150,7 +150,7 @@ class BackupRetentionTests(unittest.TestCase):
         self.backups.symlink_to(outside, target_is_directory=True)
         self.prune()
         self.assertEqual(list(outside.iterdir()), [])
-        self.assertIn("безопасная очистка", self.output.getvalue())
+        self.assertIn("очистка", " ".join(self.output.getvalue().split()))
 
     def test_missing_snapshot_and_invalid_metadata_are_not_deleted(self):
         paths = [self.snapshot(number) for number in range(6)]
@@ -170,7 +170,7 @@ class BackupRetentionTests(unittest.TestCase):
             deploy.shutil.rmtree.avoids_symlink_attacks = True
             self.prune()
         self.assertEqual(len(self.names()), 5)
-        self.assertIn("безопасная очистка", self.output.getvalue())
+        self.assertIn("очистка", " ".join(self.output.getvalue().split()))
         self.prune()
         self.assertEqual(len(self.names()), 3)
 
@@ -205,4 +205,119 @@ class BackupRetentionTests(unittest.TestCase):
         previous = self.snapshot(1, sequence=9999999999999999999)
         backup = deploy.stage_sources(ROOT, self.target, "test", "synthetic")
         self.assertGreater(deploy.read_json(backup / "state.json")["created_ns"], deploy.read_json(previous / "state.json")["created_ns"])
+
+    def legacy(self, path):
+        state = deploy.read_json(path / "state.json")
+        state.pop("retention_status")
+        deploy.atomic_json(path / "state.json", state)
+
+    def receipt(self, holder, referenced, phase="complete", saved=False):
+        journal = {"phase": phase, "backup": referenced.relative_to(self.target).as_posix()}
+        state = deploy.read_json(holder / "state.json")
+        if saved:
+            name = ".stolas-transaction.json"
+            state["files"][name] = True
+            deploy.atomic_json(holder / "files" / name, journal)
+        else:
+            state["previous_transaction"] = journal
+        deploy.atomic_json(holder / "state.json", state)
+
+    def test_seven_mixed_snapshots_reconcile_proven_legacy_and_protect_rollback(self):
+        paths = [self.snapshot(n, "complete" if n < 5 else "rolled_back") for n in range(7)]
+        for path in paths[:3]:
+            self.legacy(path)
+        self.receipt(paths[3], paths[0], saved=True)
+        self.receipt(paths[4], paths[1], "rolled_back")
+        self.journal(paths[6], "rolled_back")
+        self.prune()
+        self.assertEqual(self.names(), {p.name for p in (paths[2], *paths[4:])})
+        text = " ".join(self.output.getvalue().split())
+        self.assertEqual(text.count("Резервные копии транзакций:"), 1)
+        self.assertIn("всего 4, обычных точек 3/3", text)
+        self.assertIn("неизвестных исключений 1", text)
+        self.prune()
+        self.assertEqual(len(self.names()), 4)
+
+    def test_multiple_unknowns_emit_one_warning_with_counts_and_reason(self):
+        paths = [self.snapshot(n) for n in range(7)]
+        for path in paths[:3]:
+            self.legacy(path)
+        self.journal(paths[-1], "rolled_back")
+        self.prune()
+        text = " ".join(self.output.getvalue().split())
+        self.assertEqual(text.count("Резервные копии транзакций:"), 1)
+        self.assertIn("всего 6, обычных точек 3/3", text)
+        self.assertIn("неизвестных исключений 3", text)
+        self.assertIn("подтверждения завершения: 3", text)
+
+    def test_active_legacy_reference_overrides_old_completion_evidence(self):
+        paths = [self.snapshot(n) for n in range(6)]
+        self.legacy(paths[0])
+        self.receipt(paths[1], paths[0])
+        self.journal(paths[0], "interrupted")
+        self.prune()
+        self.assertTrue(paths[0].exists())
+        self.assertNotIn("retention_status", deploy.read_json(paths[0] / "state.json"))
+        self.assertEqual(len(self.names()), 4)
+
+    def test_legacy_current_rollback_receipt_survives_journal_replacement(self):
+        path = self.snapshot(0)
+        self.legacy(path)
+        self.journal(path, "rolled_back")
+        backup = deploy.stage_sources(ROOT, self.target, "fixture", "")
+        state = deploy.read_json(backup / "state.json")
+        self.assertEqual(state["previous_transaction"]["phase"], "rolled_back")
+        self.journal(backup)
+        deploy.mark_backup(backup, "complete")
+        self.prune()
+        self.assertEqual(deploy.read_json(path / "state.json")["retention_status"], "rolled_back")
+
+    def test_untrusted_evidence_never_classifies_by_configured_or_order(self):
+        paths = [self.snapshot(n) for n in range(5)]
+        for path in paths[:2]:
+            self.legacy(path)
+        state = deploy.read_json(paths[-1] / "state.json")
+        state["previous_transaction"] = {"phase": "complete", "backup": "../outside"}
+        deploy.atomic_json(paths[-1] / "state.json", state)
+        self.prune()
+        self.assertEqual(len(self.names()), 5)
+        self.assertIn("некорректное свидетельство", " ".join(self.output.getvalue().split()))
+
+    def test_failed_cleanup_emits_one_report_and_then_converges(self):
+        for number in range(7):
+            self.snapshot(number)
+        with patch.object(deploy.shutil, "rmtree", side_effect=PermissionError):
+            deploy.shutil.rmtree.avoids_symlink_attacks = True
+            self.prune()
+        self.assertEqual(" ".join(self.output.getvalue().split()).count("Резервные копии транзакций:"), 1)
+        self.assertIn("обычных точек 7/3", " ".join(self.output.getvalue().split()))
+        self.prune()
+        self.assertEqual(len(self.names()), 3)
+
+    def test_special_file_and_non_snapshot_entries_are_reported_and_preserved(self):
+        if os.name == "nt":
+            self.skipTest("Linux FIFO safety")
+        paths = [self.snapshot(n) for n in range(5)]
+        os.mkfifo(paths[0] / "fifo")
+        (self.backups / "unknown-file").write_text("keep")
+        self.prune()
+        self.assertTrue((paths[0] / "fifo").exists())
+        self.assertEqual(len(self.names()), 5)
+        self.assertIn("неизвестных исключений 2", " ".join(self.output.getvalue().split()))
+
+    def test_migration_and_cleanup_errors_are_one_operation_report(self):
+        paths = [self.snapshot(n) for n in range(5)]
+        self.legacy(paths[0])
+        self.journal(paths[0])
+        original = deploy.mark_backup
+        def mark(path, status):
+            if path == paths[0]:
+                raise PermissionError("private-path-not-printed")
+            return original(path, status)
+        with patch.object(deploy, "mark_backup", side_effect=mark), patch.object(deploy, "run_installer", return_value=0):
+            self.assertEqual(deploy.deploy(ROOT, self.target, configure_only=True), 0)
+        text = " ".join(self.output.getvalue().split())
+        self.assertEqual(text.count("Резервные копии транзакций:"), 1)
+        self.assertNotIn("private-path-not-printed", text)
+        self.assertTrue(paths[0].exists())
 

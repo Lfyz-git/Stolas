@@ -38,11 +38,13 @@ class InstallerTests(unittest.TestCase):
         redirect.__enter__()
         self.addCleanup(redirect.__exit__, None, None, None)
 
-    def install(self, options=None, configure_only=False, cli_status="ok", cli_code=0):
+    def install(self, options=None, configure_only=False, cli_status="ok", cli_code=0, skip_first_test=False, failed_stage=None):
         self.calls = []
 
         def command(args, root, capture=False, check=True, **kwargs):
             self.calls.append(args)
+            if failed_stage and failed_stage in args:
+                raise RuntimeError("failed-" + failed_stage)
             if "exec" in args:
                 # The CLI must see the same committed settings/token as the API.
                 self.assertEqual(installer.validated(root / "config/local.json"), self.cfg)
@@ -53,7 +55,40 @@ class InstallerTests(unittest.TestCase):
         options = {"topology": "native", "notification_mode": "alerts_only", **(options or {"mode": "later"})}
         facts = {"hostname": "test", "installation": {"directory": str(self.root), "config": False}, "docker": {"available": True, "version": "test"}, "n8n": [], "warnings": []}
         with patch.object(installer, "collect_plan", return_value={"config": self.cfg, "api": self.api, "n8n": options, "completed": []}), patch.object(installer.environment, "discover", return_value=facts), patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "request_json", return_value={"status": "ready"}), patch.object(installer, "run", side_effect=command):
-            return installer.install(self.root, configure_only=configure_only)
+            return installer.install(self.root, configure_only=configure_only, skip_first_test=skip_first_test)
+
+    def test_reconfigure_checks_service_without_measurement_even_if_cli_would_fail(self):
+        for reason in ("cooldown", "busy", "external_server_unavailable"):
+            with self.subTest(reason=reason), patch.object(installer, "first_test", side_effect=RuntimeError(reason)) as heavy:
+                self.cfg["node"] = "changed-" + reason
+                self.assertEqual(self.install(skip_first_test=True, cli_code=1), 0)
+                heavy.assert_not_called()
+                self.assertTrue(any("validate" in args for args in self.calls))
+                self.assertTrue(any("--wait" in args for args in self.calls))
+                self.assertFalse(any("exec" in args for args in self.calls))
+                self.assertEqual(installer.validated(self.root / "config/local.json")["node"], self.cfg["node"])
+                self.assertEqual(json.loads((self.root / ".stolas-progress.json").read_text())["stage"], "complete")
+
+    def test_reconfigure_health_auth_failure_still_fails(self):
+        # The helper patches request_json, so drive install directly here.
+        facts = {"hostname": "test", "installation": {"directory": str(self.root), "config": True}, "docker": {"available": True}, "addresses": [], "stolas": [], "n8n": [], "warnings": []}
+        plan = {"config": self.cfg, "api": self.api, "completed": []}
+        for reason in ("HTTP 401", "service unavailable"):
+            with self.subTest(reason=reason), patch.object(installer, "collect_plan", return_value=plan), patch.object(installer.environment, "discover", return_value=facts), patch.object(installer.environment, "port_state", return_value="free"), patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "run", return_value=subprocess.CompletedProcess([], 0)), patch.object(installer, "request_json", side_effect=RuntimeError(reason)), patch.object(installer, "first_test") as heavy:
+                with self.assertRaisesRegex(RuntimeError, reason):
+                    installer.install(self.root, skip_first_test=True)
+                heavy.assert_not_called()
+
+    def test_reconfigure_invalid_settings_still_fail(self):
+        self.cfg["parallel"] = 0
+        with self.assertRaises(ValueError):
+            self.install(skip_first_test=True)
+        self.assertFalse((self.root / ".env").exists())
+
+    def test_reconfigure_container_validation_and_startup_errors_are_not_masked(self):
+        for stage in ("validate", "up"):
+            with self.subTest(stage=stage), self.assertRaisesRegex(RuntimeError, "failed-" + stage):
+                self.install(skip_first_test=True, failed_stage=stage)
 
     def test_later_starts_service_and_runs_exactly_one_cli_cycle(self):
         self.assertEqual(self.install(), 0)
@@ -228,7 +263,7 @@ elif "exec" in sys.argv:
         self.assertEqual(installer.url("http://127.0.0.1:5678/"), "http://127.0.0.1:5678")
 
     def test_clean_runtime_without_docker_finds_script_only_after_final_confirmation(self):
-        deploy.stage_sources(ROOT, self.root, "v0.6.2", "fixture")
+        deploy.stage_sources(ROOT, self.root, "v0.6.3", "fixture")
         self.assertFalse((self.root / "tools").exists())
         facts = {"hostname": "fresh", "installation": {"directory": str(self.root), "config": False},
                  "docker": {"available": False, "reason": "Docker не установлен"}, "n8n": [], "stolas": [], "addresses": []}

@@ -2,6 +2,8 @@
 import argparse
 import calendar
 from contextlib import contextmanager
+from contextvars import ContextVar
+from collections import Counter
 import hashlib
 import json
 import os
@@ -23,6 +25,7 @@ STATE = {".stolas-draft.json": "draft.json", ".stolas-progress.json": "progress.
 BACKUP_ROOT = ".stolas/backups/transactions"
 BACKUP_NAME = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}\Z")
 BACKUP_LIMIT = 3
+BACKUP_REPORT = ContextVar("backup_report", default=None)
 
 
 def safe_path(path):
@@ -122,9 +125,59 @@ def read_json(path, default=None):
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else (default if default is not None else {})
 
 
-def backup_warning():
-    from tools.terminal import ui
-    ui().result("Часть резервных копий сохранена: безопасная очистка недоступна. Проверьте каталог транзакций", "warning")
+def backup_warning(reason, key="operation"):
+    # Fixed reason labels only: exception strings can contain private paths/data.
+    report = BACKUP_REPORT.get()
+    if report is not None:
+        report["reasons"][(key, reason)] = reason
+
+
+@contextmanager
+def backup_reporting(target):
+    if BACKUP_REPORT.get() is not None:
+        yield
+        return
+    report = {"reasons": {}, "checked": False, "pruning": False}
+    token = BACKUP_REPORT.set(report)
+    try:
+        yield
+    finally:
+        try:
+            if report["checked"] or report["reasons"]:
+                records, protected, phase = inspect_backups(target)
+                for path, state in records:
+                    if state is None:
+                        backup_warning("неизвестная запись или повреждённая/небезопасная структура", path)
+                    elif state.get("retention_status") == "pending" or path == protected and phase in ("prepared", "installed", "interrupted"):
+                        backup_warning("незавершённая транзакция защищена", path)
+                    elif state.get("retention_status") not in ("complete", "rolled_back"):
+                        backup_warning("нет непротиворечивого подтверждения завершения" if state.get("retention_status") is None else "неизвестный статус транзакции", path)
+                if not report["pruning"]:
+                    backup_warning("очистка не запускалась без успешной фиксации обслуживания", "not-committed")
+                normal = sum(state is not None and state.get("retention_status") in ("complete", "rolled_back")
+                             and not (path == protected and phase in ("prepared", "installed", "interrupted"))
+                             for path, state in records)
+                pending = sum(state is not None and (state.get("retention_status") == "pending" or
+                              path == protected and phase in ("prepared", "installed", "interrupted")) for path, state in records)
+                unknown = len(records) - normal - pending
+                from tools.terminal import ui
+                text = (f"Резервные копии транзакций: всего {len(records)}, обычных точек {normal}/{BACKUP_LIMIT}, "
+                        f"защищённых журналом {int(any(path == protected for path, _ in records))} (включены в общее число), "
+                        f"незавершённых исключений {pending}, неизвестных исключений {unknown}.")
+                if report["reasons"]:
+                    reasons = Counter(report["reasons"].values())
+                    text += " Безопасная очистка ограничена: " + "; ".join(f"{reason}: {count}" for reason, count in sorted(reasons.items()))
+                    text += (". Проверьте метаданные state.json и журналы в " + BACKUP_ROOT +
+                             "; устраните ошибки доступа/структуры и повторите обновление. Неизвестные копии требуют ручного аудита; возраст не подтверждает завершение.")
+                ui().result(text, "warning" if report["reasons"] else "success")
+        except (OSError, ValueError, TypeError, AttributeError):
+            from tools.terminal import ui
+            reasons = "; ".join(sorted(set(report["reasons"].values())))
+            ui().result("Резервные копии транзакций: общее число, обычные точки и исключения недоступны; "
+                        "безопасная очистка не выполнена. Причина: " + (reasons or "небезопасная структура или недоступные метаданные") +
+                        ". Проверьте структуру, журнал и права доступа в " + BACKUP_ROOT, "warning")
+        finally:
+            BACKUP_REPORT.reset(token)
 
 
 def backup_state(target, backup):
@@ -171,63 +224,126 @@ def mark_backup(backup, status):
     atomic_json(backup / "state.json", {**state, "retention_status": status})
 
 
-def retain_transaction_backups(target):
-    """Called under install_lock, only after successful finalization and commit.
+def journal_backup(target, journal):
+    if not isinstance(journal, dict):
+        raise ValueError("Invalid journal")
+    phase = journal.get("phase")
+    if not journal:
+        return None, None
+    if phase not in ("prepared", "installed", "interrupted", "complete", "rolled_back"):
+        raise ValueError("Invalid transaction phase")
+    name = journal.get("backup")
+    if not isinstance(name, str):
+        raise ValueError("Missing recovery reference")
+    backup = layout.bounded(target, name)
+    if backup.parent != layout.bounded(target, BACKUP_ROOT) or not BACKUP_NAME.fullmatch(backup.name):
+        raise ValueError("Invalid rollback reference")
+    return backup, phase
 
-    Pending snapshots are extra safety slots; a protected completed snapshot
-    occupies one of the three restore points. Unrecognized entries are untouched.
-    """
-    try:
-        root = layout.bounded(target, BACKUP_ROOT)
-        if not root.exists():
-            return
-        if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
-            raise ValueError("Safe recursive deletion unavailable")
-        journal = read_json(layout.bounded(target, ".stolas/state/transaction.json"))
-        protected = None
-        if journal.get("backup"):
-            protected = layout.bounded(target, journal["backup"])
-            if protected.parent != root or not BACKUP_NAME.fullmatch(protected.name):
-                raise ValueError("Invalid rollback reference")
-            backup_state(target, protected)
-        elif journal.get("phase") in ("prepared", "installed", "interrupted"):
-            raise ValueError("Missing recovery reference")
-        candidates = []
-        for backup in root.iterdir():
-            if not BACKUP_NAME.fullmatch(backup.name):
-                continue
+
+def inspect_backups(target):
+    """Validate the root/reference first; invalid references abort all pruning."""
+    root = layout.bounded(target, BACKUP_ROOT)
+    if root.resolve() != root.absolute():
+        raise ValueError("Linked backup root")
+    journal = read_json(layout.bounded(target, ".stolas/state/transaction.json"))
+    protected, phase = journal_backup(target, journal)
+    if protected is not None:
+        backup_state(target, protected)
+    records = []
+    if root.exists():
+        for backup in sorted(root.iterdir()):
             try:
                 state = backup_state(target, backup)
+                backup_order(backup, state)
+            except (OSError, ValueError, TypeError):
+                state = None
+            records.append((backup, state))
+    return records, protected, phase
+
+
+def reconcile_legacy_backups(target, records, protected, phase):
+    """Only terminal journals are positive completion evidence, never age/config.
+
+    Later snapshots preserve a small previous_transaction receipt. Older snapshots
+    may contain a saved journal in their validated file inventory. Conflicting or
+    incomplete evidence always keeps a legacy snapshot outside the deletion pool.
+    """
+    evidence = {}
+    if protected is not None:
+        evidence.setdefault(protected, set()).add(phase)
+    for path, state in records:
+        if state is None:
+            continue
+        journals = []
+        if "previous_transaction" in state:
+            journals.append(state["previous_transaction"])
+        for name in (".stolas/state/transaction.json", ".stolas-transaction.json"):
+            if state["files"].get(name) is True:
+                try:
+                    journals.append(read_json(layout.bounded(path / "files", name)))
+                except (OSError, ValueError, TypeError):
+                    backup_warning("повреждён сохранённый журнал", path)
+        for journal in journals:
+            try:
+                reference, status = journal_backup(target, journal)
+                if reference is not None:
+                    evidence.setdefault(reference, set()).add(status)
+            except (OSError, ValueError, TypeError):
+                backup_warning("некорректное свидетельство завершения", path)
+    for path, state in records:
+        if state is None or state.get("retention_status") is not None:
+            continue
+        phases = evidence.get(path, set())
+        if phases and phases <= {"complete", "rolled_back"}:
+            try:
+                status = "rolled_back" if "rolled_back" in phases else "complete"
+                mark_backup(path, status)
+                state["retention_status"] = status
+            except (OSError, ValueError, TypeError):
+                backup_warning("не удалось записать подтверждённый статус", path)
+
+
+def retain_transaction_backups(target):
+    """Under install_lock, prune only after successful finalization and commit."""
+    with backup_reporting(target):
+        BACKUP_REPORT.get()["checked"] = True
+        BACKUP_REPORT.get()["pruning"] = True
+        try:
+            records, protected, phase = inspect_backups(target)
+            reconcile_legacy_backups(target, records, protected, phase)
+            candidates = []
+            for backup, state in records:
+                if state is None:
+                    backup_warning("неизвестная запись или повреждённая/небезопасная структура", backup)
+                    continue
                 status = state.get("retention_status")
-                if status is None:
-                    # Legacy snapshots can only be classified from the journal.
-                    # Do not guess whether an unreferenced old update completed.
-                    if backup != protected or journal.get("phase") not in ("complete", "rolled_back"):
-                        backup_warning()
-                        continue
-                elif status not in ("complete", "rolled_back"):
-                    if status != "pending":
-                        backup_warning()
+                if status == "pending" or backup == protected and phase in ("prepared", "installed", "interrupted"):
+                    backup_warning("незавершённая транзакция защищена", backup)
+                    continue
+                if status not in ("complete", "rolled_back"):
+                    backup_warning("нет непротиворечивого подтверждения завершения" if status is None else "неизвестный статус транзакции", backup)
                     continue
                 candidates.append((backup_order(backup, state), backup))
-            except (OSError, ValueError, TypeError):
-                backup_warning()
-        candidates.sort(reverse=True)
-        keep = {protected} if any(path == protected for _, path in candidates) else set()
-        for _, path in candidates:
-            if len(keep) >= BACKUP_LIMIT:
-                break
-            keep.add(path)
-        for _, backup in candidates:
-            if backup in keep or backup == protected:
-                continue
-            try:
-                backup_state(target, backup)  # Recheck immediately before removal.
-                shutil.rmtree(backup)
-            except (OSError, ValueError, TypeError):
-                backup_warning()
-    except (OSError, ValueError, TypeError, AttributeError):
-        backup_warning()
+            candidates.sort(reverse=True)
+            keep = {protected} if any(path == protected for _, path in candidates) else set()
+            for _, path in candidates:
+                if len(keep) >= BACKUP_LIMIT:
+                    break
+                keep.add(path)
+            for _, backup in candidates:
+                if backup in keep or backup == protected:
+                    continue
+                if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
+                    backup_warning("платформа не поддерживает безопасное удаление", "platform")
+                    break
+                try:
+                    backup_state(target, backup)
+                    shutil.rmtree(backup)
+                except (OSError, ValueError, TypeError):
+                    backup_warning("ошибка доступа или структуры при удалении", backup)
+        except (OSError, ValueError, TypeError, AttributeError):
+            backup_warning("некорректный корень, журнал или защищённая копия", "root")
 
 
 def runtime_files(source):
@@ -309,6 +425,13 @@ def stage_sources(source, target, ref, digest):
     state = {"files": {}, "modes": {}, "new_hashes": {}, "previous_manifest": previous, "legacy": sorted(legacy),
              "configured": (target / ".env").is_file() and (target / "config/local.json").is_file(),
              "created_ns": created_ns, "retention_status": "pending"}
+    prior_journal = read_json(layout.bounded(target, ".stolas/state/transaction.json"))
+    if prior_journal:
+        try:
+            journal_backup(target, prior_journal)
+            state["previous_transaction"] = {key: prior_journal[key] for key in ("phase", "backup")}
+        except (OSError, ValueError, TypeError, KeyError):
+            backup_warning("предыдущий журнал нельзя использовать как свидетельство", "previous-journal")
     extras = {".env", "config/local.json", ".stolas/state/resources.json", ".stolas/state/handover.json", ".stolas/state/draft.json", ".stolas/state/progress.json", ".stolas/integrations/n8n/local.json", ".stolas/integrations/n8n/settings.json", ".stolas/integrations/n8n/install-state.json"}
     for name in sorted(set(files) | old_names | extras):
         path = layout.bounded(target, name)
@@ -411,7 +534,7 @@ def finalize(target, backup):
     prune_empty(target, state["legacy"])
 
 
-def run_installer(target, configure_only=False, reuse=False, recover=False):
+def run_installer(target, configure_only=False, reuse=False, recover=False, skip_first_test=False):
     args = [sys.executable, str(layout.code_root(target) / "tools/install.py"), "--root", str(target)]
     if configure_only:
         args.append("--configure-only")
@@ -419,6 +542,8 @@ def run_installer(target, configure_only=False, reuse=False, recover=False):
         args.append("--reuse-config")
     if recover:
         args.append("--recover")
+    if skip_first_test:
+        args.append("--skip-first-test")
     return subprocess.run(args, cwd=target).returncode
 
 
@@ -442,18 +567,17 @@ def deploy(source, target, ref="checkout", digest="", action=None, configure_onl
         from tools.install import require_docker_access
         layout.preflight(target)
         require_docker_access(target)
-    with install_lock(target):
+    with install_lock(target), backup_reporting(target):
         diagnostic = target / ".stolas/state/status.json"
         journal = target / ".stolas/state/transaction.json"
         pending = read_json(journal)
-        # Carry the last positively known legacy completion into the new format.
-        if pending.get("phase") in ("complete", "rolled_back") and pending.get("backup"):
-            try:
-                previous_backup = layout.bounded(target, pending["backup"])
-                if backup_state(target, previous_backup).get("retention_status") is None:
-                    mark_backup(previous_backup, pending["phase"])
-            except (OSError, ValueError, TypeError):
-                backup_warning()
+        # Persist verifiable historical evidence before replacing the journal.
+        try:
+            records, protected, phase = inspect_backups(target)
+            BACKUP_REPORT.get()["checked"] = bool(records)
+            reconcile_legacy_backups(target, records, protected, phase)
+        except (OSError, ValueError, TypeError):
+            backup_warning("исторический журнал или защищённая копия повреждены", "migration")
         if pending.get("phase") in ("prepared", "installed", "interrupted") and pending.get("configured"):
             backup = layout.bounded(target, pending["backup"])
             rollback_files(target, backup, configure_only)
@@ -494,7 +618,8 @@ def deploy(source, target, ref="checkout", digest="", action=None, configure_onl
                     current = read_json(target / ".stolas/state/managed.json")
                     ref, digest = current.get("ref", ref), current.get("archive_sha256", digest)
                 backup = stage_sources(source, target, ref, digest)
-            code = run_installer(target, configure_only, reuse=configured and action == "update")
+            installer_options = {"skip_first_test": True} if configured and action == "reconfigure" else {}
+            code = run_installer(target, configure_only, reuse=configured and action == "update", **installer_options)
             if code in (1, 3) and backup and (configured or code == 3):
                 rollback_files(target, backup, configure_only)
                 atomic_json(diagnostic, {"stage": "rolled_back" if code == 1 else "cancelled", "exit_code": code})
@@ -508,7 +633,7 @@ def deploy(source, target, ref="checkout", digest="", action=None, configure_onl
                     try:
                         mark_backup(backup, "complete")
                     except (OSError, ValueError, TypeError):
-                        backup_warning()
+                        backup_warning("не удалось записать подтверждённый статус", backup)
                     retain_transaction_backups(target)
             return code
         except BaseException:
