@@ -1,0 +1,21 @@
+// Append to an existing Alloy configuration on the Docker host.
+discovery.docker "stolas" {
+  host = "unix:///var/run/docker.sock"
+  filter {
+    name = "label"
+    values = ["org.stolas.service=core"]
+  }
+}
+
+loki.source.docker "stolas" {
+  host = "unix:///var/run/docker.sock"
+  targets = discovery.docker.stolas.targets
+  labels = { "service_name" = "stolas" }
+  forward_to = [loki.write.stolas.receiver]
+}
+
+loki.write "stolas" {
+  endpoint {
+    url = sys.env("LOKI_URL")
+  }
+}
