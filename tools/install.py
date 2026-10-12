@@ -49,9 +49,9 @@ LABELS = {
     "rescan": "Повторить обнаружение", "resume": "Продолжить", "saved": "Начать заново с сохранённых настроек",
     "sequential": "По очереди", "random": "В случайном порядке",
     "export": "Подготовить файл для импорта", "connect": "Подключить", "create": "Создать credential Stolas API", "later": "Отложить", "keep": "Сохранить",
-    "docker": "Клиент в Docker на этой машине", "native": "Клиент на этой машине",
-    "lan": "Клиент на другой машине через HTTPS", "proxy": "Через HTTPS reverse proxy",
-    "vpn": "Клиент в доверенной VPN-сети",
+    "docker": "n8n в Docker на хосте Stolas", "native": "n8n без Docker на хосте Stolas",
+    "remote": "n8n на другом хосте", "change": "Выбрать другой listener",
+    "trusted": "Да, сеть доверенная", "allow_bind": "Да, разрешить этот listener",
     "alerts_only": "Только проблемы", "every_measurement": "Каждый результат", "daily_summary": "Сводка за сутки",
     "local": "Только на этой машине (рекомендуется)", "network": "В доверенной сети",
 }
@@ -310,7 +310,7 @@ def read_api(root):
     values = {}
     for line in (root / ".env").read_text(encoding="utf-8").splitlines():
         key, separator, value = line.partition("=")
-        if separator and key in ("STOLAS_API_TOKEN", "STOLAS_LISTEN", "STOLAS_PORT", "STOLAS_LOG_LEVEL", "STOLAS_LOG_FORMAT"):
+        if separator and key in ("STOLAS_API_TOKEN", "STOLAS_LISTEN", "STOLAS_PORT", "STOLAS_LOG_LEVEL", "STOLAS_LOG_FORMAT", "STOLAS_BIND_CONFIRMED"):
             values[key] = value.strip().strip("'\"")
     if not {"STOLAS_API_TOKEN", "STOLAS_LISTEN", "STOLAS_PORT"} <= set(values):
         raise RuntimeError("Для обновления сначала завершите настройку .env через мастер")
@@ -403,7 +403,7 @@ def validate_plan(plan):
     ipaddress.IPv4Address(api["STOLAS_LISTEN"])
     integer(1, 65535)(api["STOLAS_PORT"])
     address = ipaddress.IPv4Address(api["STOLAS_LISTEN"])
-    if address.is_unspecified or address.is_global or address.is_multicast or address.is_reserved:
+    if address.is_multicast or address.is_reserved or ((address.is_unspecified or address.is_global) and api.get("STOLAS_BIND_CONFIRMED") != "1"):
         raise ValueError("Выберите конкретный адрес хоста; публичное прослушивание не предлагается")
     if api.get("STOLAS_LOG_LEVEL", "INFO") not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
         raise ValueError("Неизвестный уровень логирования")
@@ -529,6 +529,7 @@ def collect_plan(root, existing, facts, reuse=False):
                 ui().stage("Доступ к API")
                 access = choice("Откуда будут обращаться к агенту?", ("local", "network"), "local")
                 candidate["api"]["STOLAS_LISTEN"] = "127.0.0.1"
+                candidate["api"].pop("STOLAS_BIND_CONFIRMED", None)
                 if access == "network":
                     ui().line("Выберите адрес доверенной сети. Firewall остаётся под вашим управлением.")
                     addresses = [a for a in facts["addresses"] if not ipaddress.IPv4Address(a["address"]).is_global and not ipaddress.IPv4Address(a["address"]).is_loopback]
@@ -735,7 +736,7 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False):
         resources.activate(root, compose[:compose.index("compose")])
     run(compose + ["up", "-d", "--force-recreate", "--wait", "--wait-timeout", "90", "stolas"], root, progress="Запуск и проверка контейнера", timeout=120)
     checkpoint("deployed")
-    host = api["STOLAS_LISTEN"]
+    host = "127.0.0.1" if api["STOLAS_LISTEN"] == "0.0.0.0" else api["STOLAS_LISTEN"]
     request_json(f"http://{host}:{api['STOLAS_PORT']}", "/healthz", api["STOLAS_API_TOKEN"])
     ui().result("API отвечает, авторизация проверена")
     if layout.runtime(root):

@@ -4,6 +4,7 @@ import time
 import uuid
 
 from . import probes
+from .probe_worker import ProbeSession
 from .events import emit
 from .config import GROUPS
 from .storage import Busy
@@ -26,7 +27,8 @@ class Runner:
             last = self.store.latest()
             if last and time.time() - last["started_epoch"] < self.cfg["min_interval"]:
                 raise Cooldown("Minimum interval has not elapsed")
-            return self._cycle()
+            with ProbeSession() as session:
+                return self._cycle(session.timings)
 
     def _ordered_servers(self, name, deadline):
         group = self.cfg["server_groups"][name]
@@ -66,7 +68,11 @@ class Runner:
             try:
                 for direction, reverse in (("download", True), ("upload", False)):
                     self._route_check(sample, cfg, address, deadline, result)
-                    sample[direction] = probes.measure(cfg, address, port, reverse, min(cfg["process_timeout"], self._remaining(deadline)))
+                    phase_started = time.monotonic()
+                    try:
+                        sample[direction] = probes.measure(cfg, address, port, reverse, min(cfg["process_timeout"], self._remaining(deadline)))
+                    finally:
+                        result["timings"]["iperf_seconds"] += time.monotonic() - phase_started
                     self._route_check(sample, cfg, address, deadline, result)
                 sample["valid"] = True
                 sample["low_directions"] = [d for d in ("download", "upload") if sample[d]["mbps"] < server["min_" + d + "_mbps"]]
@@ -93,7 +99,9 @@ class Runner:
             finally:
                 sample["duration_seconds"] = round(time.monotonic() - attempt_start, 3)
             if attempt + 1 < total_limit:
+                delay_started = time.monotonic()
                 time.sleep(min(cfg["retry_delay"], self._remaining(deadline)))
+                result["timings"]["retry_delay_seconds"] += time.monotonic() - delay_started
         return None
 
     def _route_check(self, sample, cfg, address, deadline, result):
@@ -107,11 +115,11 @@ class Runner:
             sample["route_checks"].append({"verified": False, "reason": error.kind, **error.details})
             raise
 
-    def _cycle(self):
+    def _cycle(self, timings):
         cfg = self.cfg
         start = time.monotonic()
         deadline = start + cfg["cycle_timeout"]
-        result = {"schema_version": 1, "id": str(uuid.uuid4()), "node": cfg["node"],
+        result = {"schema_version": 1, "id": str(uuid.uuid4()), "node": cfg["node"], "timings": timings,
                   "time": utcnow(), "started_epoch": time.time(), "status": "unavailable",
                   "wan_alert": False, "primary": None, "confirmation": None,
                   "attempts": [], "errors": [], "parameters": {"ipv": 4, "protocol": "tcp",
@@ -165,6 +173,10 @@ class Runner:
                 else:
                     result["status"] = "server_disagreement"
         result["duration_seconds"] = round(time.monotonic() - start, 3)
+        timings["orchestration_seconds"] = max(0, result["duration_seconds"] - timings["iperf_seconds"])
+        for key in timings:
+            if key != "probe_process_starts":
+                timings[key] = round(timings[key], 6)
         try:
             self.store.save(result, cfg["history_limit"])
         except Exception:

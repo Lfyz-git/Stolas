@@ -95,7 +95,7 @@ def preserve_legacy_manager(root):
     files = {name: path for name, path in runtime_files(ROOT).items()
              if name == "stolas" or name.startswith(".stolas/installer/")}
     if "stolas" not in files:
-        raise RuntimeError("Не найдена команда управления. Запустите удаление из полного архива v0.6.1")
+        raise RuntimeError("Не найдена команда управления. Запустите удаление из полного архива v0.6.2")
     previous = read_json(root / ".stolas/state/managed.json")
     for name in files:
         path = layout.bounded(root, name)
@@ -199,7 +199,7 @@ def update(root, version=None):
         with urllib.request.urlopen(req, timeout=20) as response:
             version = json.load(response)["tag_name"]
     if not re.fullmatch(r"v\d+\.\d+\.\d+", version):
-        raise ValueError("Версия должна иметь вид v0.6.1")
+        raise ValueError("Версия должна иметь вид v0.6.2")
     terminal.line("Версия: " + version)
     with tempfile.TemporaryDirectory(prefix="stolas-update-") as directory:
         path = Path(directory) / "bootstrap.sh"
@@ -221,7 +221,7 @@ def main():
     sub.add_parser("logs", help="смотреть логи")
     sub.add_parser("configure", help="изменить настройки")
     upgrade = sub.add_parser("update", help="обновить с сохранением истории")
-    upgrade.add_argument("--version", help="версия релиза, например v0.6.1")
+    upgrade.add_argument("--version", help="версия релиза, например v0.6.2")
     sub.add_parser("rollback", help="вернуть предыдущую версию")
     diagnose = sub.add_parser("diagnose", help="проверить окружение")
     diagnose.add_argument("--json", action="store_true", help="JSON без секретов")

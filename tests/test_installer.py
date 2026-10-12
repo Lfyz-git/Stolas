@@ -228,7 +228,7 @@ elif "exec" in sys.argv:
         self.assertEqual(installer.url("http://127.0.0.1:5678/"), "http://127.0.0.1:5678")
 
     def test_clean_runtime_without_docker_finds_script_only_after_final_confirmation(self):
-        deploy.stage_sources(ROOT, self.root, "v0.6.1", "fixture")
+        deploy.stage_sources(ROOT, self.root, "v0.6.2", "fixture")
         self.assertFalse((self.root / "tools").exists())
         facts = {"hostname": "fresh", "installation": {"directory": str(self.root), "config": False},
                  "docker": {"available": False, "reason": "Docker не установлен"}, "n8n": [], "stolas": [], "addresses": []}

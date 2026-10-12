@@ -1,15 +1,14 @@
 import ipaddress
 import json
 import math
-import queue
 import socket
 import subprocess
-import threading
 import time
 import urllib.request
 import urllib.error
 
 from agent import __version__
+from agent.probe_worker import bounded, current_session
 
 
 class ProbeError(Exception):
@@ -20,6 +19,8 @@ class ProbeError(Exception):
 
 
 def resolve(host, timeout=5):
+    if current_session.get() is not None:
+        return current_session.get().resolve(host, timeout)
     # Resolution runs in a child so a broken system resolver cannot hang a cycle.
     import sys
     code = "import socket,sys; print(socket.gethostbyname(sys.argv[1]))"
@@ -33,6 +34,8 @@ def resolve(host, timeout=5):
 def guard(cfg, address, timeout=12):
     if cfg["route"]["mode"] == "off":
         return {"verified": False, "reason": "explicitly_disabled"}
+    if current_session.get() is not None:
+        return current_session.get().guard(cfg, address, timeout)
     import sys
     code = "from agent.probes import guard_main; guard_main()"
     try:
@@ -95,31 +98,13 @@ def probe_public_ip(url, timeout):
     # witness, including DNS and slow response bodies, without another interpreter.
     # Timed-out workers cannot publish late results to another witness's queue or
     # delay guard-process exit; the parent still enforces the hard overall deadline.
-    if timeout <= 0:
-        raise ProbeError("timeout")
-    deadline = time.monotonic() + timeout
-    results = queue.Queue(maxsize=1)
-
-    def read():
-        try:
-            results.put((True, _read_public_ip(url, timeout)))
-        except ProbeError as error:
-            results.put((False, error))
-        except Exception:
-            results.put((False, ProbeError("probe_failed")))
-
-    threading.Thread(target=read, daemon=True).start()
     try:
-        ok, value = results.get(timeout=max(0, deadline - time.monotonic()))
-    except queue.Empty:
+        return str(ipaddress.IPv4Address(bounded(lambda: _read_public_ip(url, timeout), timeout)))
+    except TimeoutError:
         raise ProbeError("timeout") from None
-    if time.monotonic() >= deadline:
-        raise ProbeError("timeout")
-    if not ok:
-        raise value
-    try:
-        return str(ipaddress.IPv4Address(value))
-    except (ValueError, TypeError):
+    except ProbeError:
+        raise
+    except Exception:
         raise ProbeError("probe_failed") from None
 
 
@@ -131,12 +116,17 @@ def _guard(cfg, address, timeout=None):
         raise ProbeError("route_unconfigured")
     deadline = time.monotonic() + (timeout if timeout is not None else r["verification_timeout"])
     details = {"verified": False, "egress_verified": False, "allow_measurement": False,
-               "verification_status": "unavailable", "sources": []}
+               "verification_status": "unavailable", "sources": [],
+               "timings": {"local_route_seconds": 0.0, "https_witness_seconds": 0.0}}
     try:
         cmd = ["ip", "-j", "-4", "route", "get", address]
         if cfg["bind_address"]:
             cmd += ["from", cfg["bind_address"]]
-        route = json.loads(subprocess.run(cmd, capture_output=True, text=True, timeout=min(3, max(0.01, deadline - time.monotonic())), check=True).stdout)[0]
+        route_started = time.monotonic()
+        try:
+            route = json.loads(subprocess.run(cmd, capture_output=True, text=True, timeout=min(3, max(0.01, deadline - time.monotonic())), check=True).stdout)[0]
+        finally:
+            details["timings"]["local_route_seconds"] = round(time.monotonic() - route_started, 6)
         if r["interface"] and route.get("dev") != r["interface"]:
             raise ProbeError("route_interface_mismatch")
         if r["gateway"] and route.get("gateway") != r["gateway"]:
@@ -150,6 +140,7 @@ def _guard(cfg, address, timeout=None):
             if remaining <= 0.05:
                 witness.update(status="error", reason="budget_exhausted")
                 continue
+            witness_started = time.monotonic()
             try:
                 value = probe_public_ip(url, min(r["source_timeout"], remaining / (len(r["public_ip_urls"]) - index)))
                 observations.append(value)
@@ -163,6 +154,9 @@ def _guard(cfg, address, timeout=None):
                     break
             except ProbeError as error:
                 witness.update(status="error", reason=error.kind)
+            finally:
+                witness["elapsed_seconds"] = round(time.monotonic() - witness_started, 6)
+                details["timings"]["https_witness_seconds"] += witness["elapsed_seconds"]
         details.update(interface=route.get("dev"), gateway=route.get("gateway"), method="local_route_and_https_sources")
         if observations and not allowed:
             details["verification_status"] = "mismatch"

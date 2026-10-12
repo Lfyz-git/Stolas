@@ -13,43 +13,100 @@ import hashlib
 import subprocess
 import urllib.parse
 from tools.install import (ask, choice, select_named, propose_port, url, matching,
-    integer, timezone, https_url, read_api, clean_env, write_private, request_json,
+    integer, timezone, read_api, clean_env, write_private, request_json,
     docker_command, run, Back, Cancel, Rescan)
 from tools import environment, layout
 from tools.terminal import ui
 from tools.deploy import install_lock
 
-def private_address(value):
-    address = ipaddress.IPv4Address(value)
-    if address.is_global or address.is_loopback or address.is_unspecified or address.is_multicast or address.is_reserved:
-        raise ValueError()
-    return str(address)
+class BindingError(ValueError):
+    pass
 
 
-def connection_url(value, topology):
-    if topology in ("docker", "vpn"):
-        parsed = urllib.parse.urlsplit(value)
-        if parsed.scheme == "http" and parsed.hostname:
-            address = ipaddress.IPv4Address(parsed.hostname)
-            if not address.is_global and not address.is_loopback and not address.is_unspecified and not address.is_multicast and not address.is_reserved and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment and not any(c.isspace() for c in value):
-                if parsed.port is not None and not 1 <= parsed.port <= 65535:
-                    raise ValueError()
-                return value.rstrip("/")
-    result = url(value)
-    if topology in ("lan", "proxy") and not result.startswith("https://"):
-        raise ValueError()
-    if topology == "docker" and urllib.parse.urlsplit(result).hostname in ("localhost", "127.0.0.1", "::1"):
-        raise ValueError()
-    return result
+class IntegrationConnectionError(RuntimeError):
+    pass
+
+
+def connection_url(value, topology=None):
+    """Endpoint syntax is independent of placement; HTTP trust is confirmed by UI."""
+    parsed = urllib.parse.urlsplit(value)
+    if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username
+            or parsed.password or parsed.query or parsed.fragment or any(c.isspace() for c in value)):
+        raise ValueError("Нужен URL http/https без логина, query и fragment")
+    if parsed.port is not None and not 1 <= parsed.port <= 65535:
+        raise ValueError("Порт endpoint должен быть от 1 до 65535")
+    try:
+        address = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        address = None
+    if address is not None and (address.is_unspecified or address.is_multicast):
+        raise ValueError("Endpoint должен содержать адрес, доступный клиенту")
+    return value.rstrip("/")
+
+
+def listener(value):
+    try:
+        address, port = value.rsplit(":", 1)
+        address = ipaddress.IPv4Address(address)
+        port = integer(1, 65535)(port)
+        if address.is_multicast or address.is_reserved:
+            raise ValueError()
+        return str(address), str(port)
+    except (ValueError, AttributeError):
+        raise BindingError("Нужен локальный IPv4:порт, например 192.0.2.10:8080; порт 1–65535") from None
+
+
+def local_listener_candidates(facts):
+    bridges = {network.get("bridge") for network in facts.get("networks", {}).values() if network.get("driver") == "bridge"}
+    gateways = {item.get("Gateway") for network in facts.get("networks", {}).values() if network.get("driver") == "bridge" for item in network.get("ipam") or []}
+    candidates = {}
+    for item in facts.get("addresses", []):
+        try:
+            address, _ = listener(item["address"] + ":8080")
+        except (ValueError, KeyError, TypeError):
+            continue
+        if address == "0.0.0.0":
+            continue
+        interface = item["interface"]
+        bridge = interface in bridges or address in gateways or interface == "docker0" or interface.startswith("br-")
+        candidate = dict(address=address, interface=interface, bridge=bridge)
+        # Deterministic even if discovery returns duplicate addresses/interfaces.
+        if address not in candidates or interface < candidates[address]["interface"]:
+            candidates[address] = candidate
+    return sorted(candidates.values(), key=lambda item: (item["bridge"], ipaddress.IPv4Address(item["address"]).is_loopback,
+                                                        int(ipaddress.IPv4Address(item["address"])), item["interface"]))
+
+
+def validate_listener(api, facts, root):
+    address, port = listener(api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"])
+    if address == "0.0.0.0" and api.get("STOLAS_BIND_CONFIRMED") != "1":
+        raise BindingError("Прослушивание всех интерфейсов требует отдельного подтверждения")
+    state = environment.port_state(address, int(port))
+    if state == "free":
+        return
+    if state == "busy" and (root / ".env").is_file():
+        saved = read_api(root)
+        if all(saved[key] == api[key] for key in ("STOLAS_LISTEN", "STOLAS_PORT")) and facts.get("stolas"):
+            return  # The authenticated local health check still runs before apply.
+    if state == "not_local":
+        raise BindingError("Адрес прослушивания отсутствует на этом хосте; выберите локальный IPv4 или выполните rescan")
+    if state == "busy":
+        raise BindingError("Порт прослушивания занят; выберите другой IP:порт. Endpoint n8n пока не проверялся")
+    raise BindingError("ОС запрещает привязку API; проверьте права и выберите доступный локальный IP:порт")
 
 
 
 def collect_topology(api, facts=None, root=ROOT, previous=None):
     facts = facts if facts is not None else environment.discover(root)
     previous = previous or {}
-    default = previous.get("topology", "docker" if facts["n8n"] else "")
-    topology = choice("Где работает n8n", ("docker", "native", "lan", "vpn", "proxy"), default)
+    legacy = previous.get("topology") in ("lan", "vpn", "proxy")
+    default = "remote" if legacy else previous.get("topology", "docker" if facts["n8n"] else "")
+    topology = choice("Где работает n8n", ("docker", "native", "remote"), default)
     options = {"topology": topology}
+    preserve = False
+    if legacy:
+        ui().line("Старая схема подключения заменяется размещением n8n. Текущий listener: " + api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"])
+        preserve = choice("Сохранить текущий listener и проверить endpoint?", ("keep", "change"), "keep") == "keep"
     if topology == "docker":
         if not facts["docker"]["available"]:
             raise ValueError(facts["docker"]["reason"] + ". Исправьте доступ и повторите обнаружение (rescan), либо выберите другую схему")
@@ -61,30 +118,47 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
             automatic=len(facts["n8n"]) == 1 and facts["n8n"][0]["confidence"] == "image")
         candidates, reasons = environment.host_candidates(container, facts)
         if not candidates:
-            raise ValueError("Не найден подтверждённый адрес хоста для n8n: " + "; ".join(reasons or ["контейнер не подключён к подходящей сети"]) + ". Используйте HTTPS proxy/VPN; сети n8n не изменены")
+            raise ValueError("Не найден подтверждённый адрес хоста для n8n: " + "; ".join(reasons or ["контейнер не подключён к подходящей сети"]) + ". Выберите другое размещение или исправьте связность; сети n8n не изменены")
         saved_network = next((c for c in candidates if c["network"] == previous.get("network") and c["address"] == api["STOLAS_LISTEN"]), None)
         selected = saved_network or select_named("Сеть для связи n8n со Stolas", candidates,
                     [f"{c['network']} — интерфейс {c['interface']} ({c['address']})" for c in candidates])
         options.update(docker_container=container["name"], docker_id=container["id"], network=selected["network"], network_mode=container["mode"])
-        api["STOLAS_LISTEN"] = selected["address"]
-    elif topology == "vpn":
-        candidates = [item for item in facts["addresses"] if not ipaddress.IPv4Address(item["address"]).is_loopback and not ipaddress.IPv4Address(item["address"]).is_global]
-        if not candidates:
-            raise ValueError("IPv4 интерфейсов не обнаружены. Сначала настройте доверенный VPN и установите iproute2; мастер не создаёт туннель")
-        ui().line("Выберите интерфейс заранее настроенного доверенного VPN.")
-        selected = select_named("Интерфейс VPN", candidates, [f"{item['interface']} ({item['address']})" for item in candidates], automatic=False)
-        api["STOLAS_LISTEN"] = selected["address"]
-    else:
+        if not preserve:
+            api["STOLAS_LISTEN"] = selected["address"]
+            propose_port(api, facts, root)
+    elif topology == "remote" and not preserve:
+        candidates = local_listener_candidates(facts)
+        items = [*candidates, None]
+        names = [item["interface"] + " — " + item["address"] + ":8080" + (" (Docker bridge)" if item["bridge"] else "") for item in candidates]
+        ui().line("Локальный IP:порт, на котором Stolas будет слушать. Маршрутизацию и firewall настройте самостоятельно.")
+        default_index = next((index for index, item in enumerate(candidates) if item["address"] == api["STOLAS_LISTEN"]), 0)
+        selected = select_named("Listener Stolas", items, [*names, "Ввести IPv4:порт вручную"], default=default_index, automatic=False)
+        binding = selected["address"] + ":8080" if selected else ask("Локальный IPv4:порт Stolas", api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"], lambda value: ":".join(listener(value)))
+        api["STOLAS_LISTEN"], api["STOLAS_PORT"] = listener(binding)
+    elif topology == "native" and not preserve:
         api["STOLAS_LISTEN"] = "127.0.0.1"
-    propose_port(api, facts, root)
-    if topology in ("lan", "proxy"):
-        ui().line("Укажите адрес настроенного HTTPS proxy. Локальный адрес Stolas: 127.0.0.1:" + api["STOLAS_PORT"] + ".")
-
-        options["endpoint"] = ask("Ваш HTTPS адрес Stolas на reverse proxy", previous.get("endpoint", ""), https_url)
+        api["STOLAS_PORT"] = "8080" if previous.get("topology") != "native" else api["STOLAS_PORT"]
+        propose_port(api, facts, root)
+    address = ipaddress.IPv4Address(api["STOLAS_LISTEN"])
+    if address.is_unspecified or address.is_global:
+        ui().result("Listener может открыть API внешним клиентам. Проверьте firewall и доверие к сети", "warning")
+        if choice("Явно разрешить выбранное прослушивание?", ("allow_bind", "cancel"), "cancel") != "allow_bind":
+            raise Cancel()
+        api["STOLAS_BIND_CONFIRMED"] = "1"
     else:
-        options["endpoint"] = f"http://{api['STOLAS_LISTEN']}:{api['STOLAS_PORT']}"
-        connection_url(options["endpoint"], "native" if options.get("network_mode") == "host" else topology)
-        ui().line("Адрес Stolas для n8n: " + options["endpoint"])
+        api.pop("STOLAS_BIND_CONFIRMED", None)
+    validate_listener(api, facts, root)
+    direct = "" if address.is_unspecified else f"http://{api['STOLAS_LISTEN']}:{api['STOLAS_PORT']}"
+    default_endpoint = previous.get("endpoint", direct) if preserve or previous.get("endpoint_override") else direct
+    ui().line("Endpoint — URL, который использует n8n. Для reverse proxy можно указать HTTPS независимо от listener.")
+    options["endpoint"] = ask("Адрес Stolas для n8n", default_endpoint, connection_url)
+    options["endpoint_override"] = options["endpoint"] != direct
+    parsed = urllib.parse.urlsplit(options["endpoint"])
+    if parsed.scheme == "http" and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+        ui().result("HTTP передаёт заголовок Authorization без TLS. Используйте только доверенную сеть; иначе выберите HTTPS", "warning")
+        if choice("Подтверждаете доверие к сети этого endpoint?", ("trusted", "cancel"), "cancel") != "trusted":
+            raise Cancel()
+        options["http_trusted"] = True
     return options
 
 
@@ -126,9 +200,12 @@ def credential_choice(items, kind):
 
 
 
-def validate_discovered_endpoint(plan, facts):
+def validate_discovered_endpoint(plan, facts, root=ROOT):
     options = plan["n8n"]
-    if options["mode"] == "later" or options.get("topology") != "docker":
+    if options["mode"] == "later":
+        return
+    validate_listener(plan["api"], facts, root)
+    if options.get("topology") != "docker":
         return
     if not facts["docker"]["available"]:
         raise ValueError(facts["docker"]["reason"] + "; повторите rescan")
@@ -136,11 +213,9 @@ def validate_discovered_endpoint(plan, facts):
     if selected is None:
         raise ValueError("Сохранённый контейнер n8n больше не обнаружен; выберите раздел n8n или rescan")
     choices, reasons = environment.host_candidates(selected, facts)
-    host = urllib.parse.urlsplit(options["endpoint"]).hostname
+    host = plan["api"]["STOLAS_LISTEN"]
     if not any(c["address"] == host for c in choices):
-        raise ValueError("Сохранённый endpoint не соответствует обнаруженным сетям n8n; выберите раздел n8n. " + "; ".join(reasons))
-    if host != plan["api"]["STOLAS_LISTEN"] or urllib.parse.urlsplit(options["endpoint"]).port != int(plan["api"]["STOLAS_PORT"]):
-        raise ValueError("Endpoint n8n отличается от адреса/порта Stolas; обновите интеграцию в разделе n8n")
+        raise BindingError("Локальный listener не соответствует обнаруженным сетям n8n; повторите выбор размещения. Endpoint может быть задан отдельно. " + "; ".join(reasons))
     options["docker_id"] = selected["id"]
     options["network_mode"] = selected["mode"]
 
@@ -163,6 +238,13 @@ def workflow(root, options):
 
 
 def check_connection(root, options, api, compose):
+    if "STOLAS_LISTEN" in api:
+        host = "127.0.0.1" if api["STOLAS_LISTEN"] == "0.0.0.0" else api["STOLAS_LISTEN"]
+        try:
+            if request_json(f"http://{host}:{api['STOLAS_PORT']}", "/healthz", api["STOLAS_API_TOKEN"]).get("status") != "ready":
+                raise RuntimeError("not_ready")
+        except (RuntimeError, ValueError, OSError):
+            raise IntegrationConnectionError("Локальный listener Stolas не отвечает с авторизацией. Проверьте привязку IP:порта и состояние Core; endpoint n8n пока не проверен") from None
     container = options.get("docker_id") or options.get("docker_container")
     if options.get("topology") == "docker" and container:
         code = "let s='';process.stdin.on('data',x=>s+=x);process.stdin.on('end',async()=>{try{const p=JSON.parse(s);const r=await fetch(p.url+'/healthz',{headers:{Authorization:'Bearer '+p.token},redirect:'error',signal:AbortSignal.timeout(8000)});const j=await r.json();process.exit(r.status===200&&j.status==='ready'?0:1)}catch{process.exit(1)}})"
@@ -172,14 +254,17 @@ def check_connection(root, options, api, compose):
                                     input=json.dumps({"url": options["endpoint"], "token": api["STOLAS_API_TOKEN"]}),
                                     text=True, capture_output=True, timeout=15)
         except subprocess.TimeoutExpired:
-            raise RuntimeError("Проверка сети n8n превысила 15 секунд; проверьте Docker и доступность endpoint") from None
+            raise IntegrationConnectionError("Проверка endpoint из n8n превысила 15 секунд; проверьте связность и URL. Локальный listener проверен") from None
         if result.returncode:
             if result.returncode in (126, 127) or "executable file not found" in result.stderr.lower():
                 raise RuntimeError("Node.js недоступен в контейнере n8n. Проверьте HTTP Request через Manual test. Файл: " + str(layout.integration_path(root, "local.json")))
-            raise RuntimeError("n8n Docker не достигает /healthz. Проверьте IP bridge, адрес STOLAS_LISTEN и firewall; контейнер n8n не изменён")
+            raise IntegrationConnectionError("n8n Docker не достигает endpoint /healthz. Локальный listener проверен; проверьте URL и связность из n8n; контейнер n8n не изменён")
         ui().result("API доступен из контейнера n8n")
     else:
-        request_json(options["endpoint"], "/healthz", api["STOLAS_API_TOKEN"])
+        try:
+            request_json(options["endpoint"], "/healthz", api["STOLAS_API_TOKEN"])
+        except (RuntimeError, ValueError, OSError):
+            raise IntegrationConnectionError("Endpoint n8n недоступен с этого хоста. Локальный listener проверен; проверьте URL, DNS и связность. Доступ с другого хоста подтверждается Manual test в n8n") from None
         ui().result("API доступен с этой машины")
         ui().line("В n8n выполните Manual test для проверки доступа.")
 
@@ -295,7 +380,7 @@ def integrate(root, mode=None):
                     ui().line("Адрес API изменится. Stolas будет перезапущен; сети n8n останутся прежними.")
                 if choice("Применить настройки подключения?", ("apply", "cancel"), "apply") == "cancel":
                     raise Cancel()
-                validate_discovered_endpoint({"api": api, "n8n": options}, environment.discover(root))
+                validate_discovered_endpoint({"api": api, "n8n": options}, environment.discover(root), root)
                 data = workflow(root, options)
                 write_private(layout.integration_path(root, "local.json"), json.dumps(data, ensure_ascii=False, indent=2) + "\n")
                 if layout.runtime(root):
@@ -329,8 +414,10 @@ def integrate(root, mode=None):
                 continue
             except Rescan:
                 facts = environment.discover(root)
-            except (ValueError, RuntimeError):
+            except (ValueError, RuntimeError) as error:
                 ui().result("Подключение не завершено. Core продолжает работать.", "warning")
+                if isinstance(error, (BindingError, IntegrationConnectionError)):
+                    ui().line(str(error))
                 ui().line("Импортируйте файл вручную: " + str(layout.integration_path(root, "local.json")))
                 return 2
 

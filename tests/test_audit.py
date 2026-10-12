@@ -263,20 +263,20 @@ class DeployAuditTests(unittest.TestCase):
 @unittest.skipUnless(HAS_TOOLS, "Installer sources are not in the production image")
 class TopologyAuditTests(unittest.TestCase):
     def test_topology_endpoint_rules(self):
-        accepted = {"native": "http://127.0.0.1:8080", "docker": "http://172.20.0.1:8080", "lan": "https://stolas.example.test", "vpn": "http://10.8.0.1:8080", "proxy": "https://stolas.example.test"}
+        accepted = {"native": "http://127.0.0.1:8080", "docker": "http://172.20.0.1:8080", "remote": "http://10.8.0.1:8080"}
         for topology, endpoint in accepted.items():
             self.assertEqual(integrate.connection_url(endpoint, topology), endpoint)
-        for topology, endpoint in (("docker", "http://127.0.0.1:8080"), ("lan", "http://192.168.1.2:8080"), ("vpn", "http://8.8.8.8:8080"), ("proxy", "http://example.test")):
+        for topology, endpoint in (("docker", "http://0.0.0.0:8080"), ("remote", "https://secret:password@example.test"), ("native", "http://example.test:70000")):
             with self.assertRaises(ValueError):
                 integrate.connection_url(endpoint, topology)
 
     def test_each_topology_can_be_collected_without_public_bind(self):
-        for topology in ("native", "docker", "lan", "vpn", "proxy"):
+        for topology in ("native", "docker", "remote"):
             api = {"STOLAS_PORT": "8080", "STOLAS_LISTEN": "127.0.0.1"}
             answers = [topology]
-            if topology == "docker": pass
-            elif topology == "vpn": answers += ["1"]
-            elif topology in ("lan", "proxy"): answers += ["https://stolas.example.test"]
+            if topology == "remote": answers += ["1"]
+            answers += [""]
+            if topology != "native": answers += ["trusted"]
             facts = {"docker": {"available": True}, "stolas": [], "addresses": [{"address": "10.8.0.1", "interface": "wg0"}, {"address": "172.20.0.1", "interface": "br-test"}],
                      "n8n": [{"name": "automation", "id": "container-id", "image": "n8nio/n8n:2", "mode": "default", "confidence": "image", "networks": {"default": {"Gateway": "172.20.0.1", "NetworkID": "net"}}}],
                      "networks": {"net": {"driver": "bridge", "ipam": [{"Gateway": "172.20.0.1"}]}}}

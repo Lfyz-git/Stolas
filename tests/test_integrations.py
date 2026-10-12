@@ -211,7 +211,7 @@ class IntegrationTests(unittest.TestCase):
         facts["timezone"] = "Europe/Moscow"
         (self.root / "n8n/settings.json").write_text(json.dumps({"timezone": "Europe/Berlin"}))
         original = (self.root / ".env").read_bytes()
-        with patch.dict(os.environ, {"TZ": "Etc/UTC"}), patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "request_json", return_value={"status": "ready"}), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "123", "", "", "apply"]) as prompt, patch("getpass.getpass") as secret:
+        with patch.dict(os.environ, {"TZ": "Etc/UTC"}), patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "request_json", return_value={"status": "ready"}), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "", "123", "", "", "apply"]) as prompt, patch("getpass.getpass") as secret:
             self.assertEqual(integrate.integrate(self.root, "export"), 0)
         secret.assert_not_called(); run.assert_not_called()
         self.assertEqual((self.root / ".env").read_bytes(), original)

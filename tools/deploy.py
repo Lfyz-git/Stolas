@@ -1,11 +1,14 @@
 """Transactional runtime installation. Backups contain exact files, never a broad delete."""
 import argparse
+import calendar
 from contextlib import contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -17,6 +20,9 @@ from tools import layout
 
 PRIVATE = {".env", "config/local.json", "n8n/local.json", "n8n/install-state.json", "n8n/settings.json"}
 STATE = {".stolas-draft.json": "draft.json", ".stolas-progress.json": "progress.json", ".stolas-install-status.json": "status.json"}
+BACKUP_ROOT = ".stolas/backups/transactions"
+BACKUP_NAME = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}\Z")
+BACKUP_LIMIT = 3
 
 
 def safe_path(path):
@@ -116,6 +122,114 @@ def read_json(path, default=None):
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else (default if default is not None else {})
 
 
+def backup_warning():
+    from tools.terminal import ui
+    ui().result("Часть резервных копий сохранена: безопасная очистка недоступна. Проверьте каталог транзакций", "warning")
+
+
+def backup_state(target, backup):
+    """Validate the entire owned snapshot before considering recursive deletion."""
+    root = layout.bounded(target, BACKUP_ROOT)
+    if root.resolve() != root.absolute() or not backup.is_dir():
+        raise ValueError("Invalid backup directory")
+    if backup.parent != root or not BACKUP_NAME.fullmatch(backup.name):
+        raise ValueError("Invalid transaction backup")
+    layout.bounded(target, backup.relative_to(target))
+    for directory, directories, files in os.walk(backup, followlinks=False):
+        for path in [Path(directory), *(Path(directory) / name for name in directories + files)]:
+            info = path.lstat()
+            if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+                raise ValueError("Linked backup")
+            if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                raise ValueError("Special backup file")
+    state = read_json(layout.bounded(backup, "state.json"))
+    if not isinstance(state, dict) or not all(isinstance(state.get(key), dict) for key in ("files", "modes", "new_hashes", "previous_manifest")) or not isinstance(state.get("legacy"), list):
+        raise ValueError("Incomplete backup state")
+    for name, existed in state["files"].items():
+        if not isinstance(name, str) or type(existed) is not bool:
+            raise ValueError("Invalid snapshot inventory")
+        layout.bounded(target, name)
+        saved = layout.bounded(backup / "files", name)
+        if existed and not saved.is_file():
+            raise ValueError("Missing snapshot file")
+    return state
+
+
+def backup_order(backup, state):
+    # Older releases have no sequence: their UTC directory name is stable even
+    # when files are restored/touched. The name also breaks timestamp ties.
+    sequence = state.get("created_ns")
+    if sequence is None:
+        sequence = calendar.timegm(time.strptime(backup.name[:16], "%Y%m%dT%H%M%SZ")) * 1_000_000_000
+    if type(sequence) is not int or sequence < 0:
+        raise ValueError("Invalid backup sequence")
+    return sequence, backup.name
+
+
+def mark_backup(backup, status):
+    state = read_json(backup / "state.json")
+    atomic_json(backup / "state.json", {**state, "retention_status": status})
+
+
+def retain_transaction_backups(target):
+    """Called under install_lock, only after successful finalization and commit.
+
+    Pending snapshots are extra safety slots; a protected completed snapshot
+    occupies one of the three restore points. Unrecognized entries are untouched.
+    """
+    try:
+        root = layout.bounded(target, BACKUP_ROOT)
+        if not root.exists():
+            return
+        if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
+            raise ValueError("Safe recursive deletion unavailable")
+        journal = read_json(layout.bounded(target, ".stolas/state/transaction.json"))
+        protected = None
+        if journal.get("backup"):
+            protected = layout.bounded(target, journal["backup"])
+            if protected.parent != root or not BACKUP_NAME.fullmatch(protected.name):
+                raise ValueError("Invalid rollback reference")
+            backup_state(target, protected)
+        elif journal.get("phase") in ("prepared", "installed", "interrupted"):
+            raise ValueError("Missing recovery reference")
+        candidates = []
+        for backup in root.iterdir():
+            if not BACKUP_NAME.fullmatch(backup.name):
+                continue
+            try:
+                state = backup_state(target, backup)
+                status = state.get("retention_status")
+                if status is None:
+                    # Legacy snapshots can only be classified from the journal.
+                    # Do not guess whether an unreferenced old update completed.
+                    if backup != protected or journal.get("phase") not in ("complete", "rolled_back"):
+                        backup_warning()
+                        continue
+                elif status not in ("complete", "rolled_back"):
+                    if status != "pending":
+                        backup_warning()
+                    continue
+                candidates.append((backup_order(backup, state), backup))
+            except (OSError, ValueError, TypeError):
+                backup_warning()
+        candidates.sort(reverse=True)
+        keep = {protected} if any(path == protected for _, path in candidates) else set()
+        for _, path in candidates:
+            if len(keep) >= BACKUP_LIMIT:
+                break
+            keep.add(path)
+        for _, backup in candidates:
+            if backup in keep or backup == protected:
+                continue
+            try:
+                backup_state(target, backup)  # Recheck immediately before removal.
+                shutil.rmtree(backup)
+            except (OSError, ValueError, TypeError):
+                backup_warning()
+    except (OSError, ValueError, TypeError, AttributeError):
+        backup_warning()
+
+
 def runtime_files(source):
     if layout.runtime(source):
         manifest = read_json(layout.bounded(source, ".stolas/state/managed.json"))
@@ -181,10 +295,20 @@ def stage_sources(source, target, ref, digest):
         path = layout.bounded(target, name)
         if path.exists() and name not in old_names and name != "compose.yaml":
             raise ValueError("Файл установки занят: " + name + ". Переместите его и повторите команду")
-    backup = target / ".stolas/backups/transactions" / (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:8])
+    backup_root = layout.bounded(target, BACKUP_ROOT)
+    created_ns = time.time_ns()
+    if backup_root.exists():
+        for previous_backup in backup_root.iterdir():
+            try:
+                previous_state = backup_state(target, previous_backup)
+                created_ns = max(created_ns, backup_order(previous_backup, previous_state)[0] + 1)
+            except (OSError, ValueError, TypeError):
+                continue
+    backup = backup_root / (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:8])
     layout.private_dir(backup)
     state = {"files": {}, "modes": {}, "new_hashes": {}, "previous_manifest": previous, "legacy": sorted(legacy),
-             "configured": (target / ".env").is_file() and (target / "config/local.json").is_file()}
+             "configured": (target / ".env").is_file() and (target / "config/local.json").is_file(),
+             "created_ns": created_ns, "retention_status": "pending"}
     extras = {".env", "config/local.json", ".stolas/state/resources.json", ".stolas/state/handover.json", ".stolas/state/draft.json", ".stolas/state/progress.json", ".stolas/integrations/n8n/local.json", ".stolas/integrations/n8n/settings.json", ".stolas/integrations/n8n/install-state.json"}
     for name in sorted(set(files) | old_names | extras):
         path = layout.bounded(target, name)
@@ -222,6 +346,7 @@ def stage_sources(source, target, ref, digest):
         atomic_json(journal, {"phase": "installed", "backup": backup.relative_to(target).as_posix(), "configured": state["configured"]})
     except BaseException:
         restore(target, backup)
+        mark_backup(backup, "rolled_back")
         atomic_json(journal, {"phase": "rolled_back", "backup": backup.relative_to(target).as_posix()})
         raise
     return backup
@@ -304,6 +429,7 @@ def rollback_files(target, backup, configure_only=False, preserve_manager=False)
     restore(target, backup, preserve_manager=preserve_manager)
     if docker and not resources.load(target, "resources.json").get("uninstalled"):
         resources.restart(target, docker)
+    mark_backup(backup, "rolled_back")
 
 
 def deploy(source, target, ref="checkout", digest="", action=None, configure_only=False):
@@ -320,6 +446,14 @@ def deploy(source, target, ref="checkout", digest="", action=None, configure_onl
         diagnostic = target / ".stolas/state/status.json"
         journal = target / ".stolas/state/transaction.json"
         pending = read_json(journal)
+        # Carry the last positively known legacy completion into the new format.
+        if pending.get("phase") in ("complete", "rolled_back") and pending.get("backup"):
+            try:
+                previous_backup = layout.bounded(target, pending["backup"])
+                if backup_state(target, previous_backup).get("retention_status") is None:
+                    mark_backup(previous_backup, pending["phase"])
+            except (OSError, ValueError, TypeError):
+                backup_warning()
         if pending.get("phase") in ("prepared", "installed", "interrupted") and pending.get("configured"):
             backup = layout.bounded(target, pending["backup"])
             rollback_files(target, backup, configure_only)
@@ -370,6 +504,12 @@ def deploy(source, target, ref="checkout", digest="", action=None, configure_onl
                 atomic_json(diagnostic, {"stage": "complete" if code == 0 else "interrupted" if code == 130 else "needs_attention", "exit_code": code, "ref": ref})
             if backup:
                 atomic_json(journal, {"phase": "interrupted" if code == 130 or code == 1 and not configured else "rolled_back" if code in (1, 3) else "complete", "backup": backup.relative_to(target).as_posix(), "configured": configured})
+                if code in (0, 2):
+                    try:
+                        mark_backup(backup, "complete")
+                    except (OSError, ValueError, TypeError):
+                        backup_warning()
+                    retain_transaction_backups(target)
             return code
         except BaseException:
             if backup:
