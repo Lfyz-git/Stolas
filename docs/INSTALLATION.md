@@ -3,7 +3,7 @@
 ## Первый запуск
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.6.0/bootstrap.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.6.1/bootstrap.sh | sh
 ```
 
 По умолчанию мастер предложит `~/stolas`, доступный обычному пользователю. Запускайте от пользователя с доступом к локальному Docker и каталогу установки.
@@ -15,7 +15,7 @@ sudo install -d -o "$USER" -g "$(id -gn)" /opt/stolas
 
 Загрузчик проверяет SHA-256 архива релиза. Это проверка целостности, а не
 отдельная подпись издателя. Можно сначала скачать и изучить bootstrap.
-`--ref v0.6.0` фиксирует версию; для ветки или полного SHA требуется также
+`--ref v0.6.1` фиксирует версию; для ветки или полного SHA требуется также
 `--sha256` доверенного архива. Без `--dir` мастер спросит каталог.
 
 `--configure-only` сохраняет настройки без Docker и теста.
@@ -102,7 +102,7 @@ SQLite хранится в Docker volume, точное имя записано �
 ## Обновить с v0.4.0
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.6.0/bootstrap.sh | sh -s -- --dir /opt/stolas --action update
+curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.6.1/bootstrap.sh | sh -s -- --dir /opt/stolas --action update
 ```
 
 Каталог и Docker-ресурсы мигрируют одной транзакцией. Старое имя с хешем
@@ -127,14 +127,14 @@ curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.6.0/bootstrap.sh
 
 ```sh
 ./stolas update
-./stolas update --version v0.6.0
+./stolas update --version v0.6.1
 ./stolas rollback
 ```
 
 Update требует GitHub; rollback использует локальную резервную копию.
 Откат восстанавливает настройки из снимка, сохраняя текущий SQLite volume.
 После отката на v0.4.0 возвращается её структура и `install.sh`;
-для следующего обновления снова используйте bootstrap v0.6.0.
+для следующего обновления снова используйте bootstrap v0.6.1.
 Если настроена команда в PATH, откат сохраняет текущие launcher и инструмент
 управления вместе с ownership команды. Core, Compose и настройки возвращаются
 из снимка; версия образа определяется по восстановленному Compose. Это позволяет
@@ -206,7 +206,7 @@ volume и перечисленные управляемые файлы. Чужи
 Повторный запуск после частичного удаления продолжает очистку.
 
 Удаление не обращается к GitHub или n8n. Для старой v0.4.0 без команды `stolas`
-можно заранее скачать bootstrap v0.6.0 и архив релиза или использовать его
+можно заранее скачать bootstrap v0.6.1 и архив релиза или использовать его
 `--action uninstall`: загрузка нужна только для получения нового инструмента,
 само удаление выполняется локально без предварительной миграции Core.
 При сохранении истории инструмент оставляет `./stolas`, чтобы повторное
