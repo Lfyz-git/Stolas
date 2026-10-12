@@ -21,6 +21,7 @@ from unittest.mock import patch
 from agent import __version__, probes
 from agent.config import DEFAULT
 from agent.runner import Runner
+from agent.probe_worker import ProbeSession
 from agent.storage import Store
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -53,6 +54,8 @@ class LocalHttpsProbeTests(unittest.TestCase):
     def setUp(self):
         self.requests = []
         requests = self.requests
+        self.responses = []
+        responses = self.responses
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -74,6 +77,8 @@ class LocalHttpsProbeTests(unittest.TestCase):
                     self.send_response(200)
                     body = {"/plain": b"192.0.2.1\n", "/json": b'"192.0.2.1"',
                             "/invalid": b'{"ip":"192.0.2.1"}', "/vpn": b'"198.51.100.1"'}.get(self.path, b'"192.0.2.1"')
+                    if self.path == "/transition" and responses:
+                        body = responses.pop(0)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 try:
@@ -108,7 +113,7 @@ class LocalHttpsProbeTests(unittest.TestCase):
             self.assertEqual(probes.probe_public_ip(self.base + "/json", 3), "192.0.2.1")
         run.assert_not_called()
 
-    def child_environment(self, startup_delay=0, stalled_dns=False):
+    def child_environment(self, startup_delay=0, stalled_dns=False, stalled_host=False):
         import sys
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -121,6 +126,10 @@ class LocalHttpsProbeTests(unittest.TestCase):
             script += "real_resolve = socket.getaddrinfo\ndef resolve(host, *args, **kwargs):\n"
             script += "    if host == 'stalled.example.test': time.sleep(30)\n"
             script += "    return real_resolve(host, *args, **kwargs)\nsocket.getaddrinfo = resolve\n"
+        if stalled_host:
+            script += "real_host = socket.gethostbyname\ndef host_lookup(host):\n"
+            script += "    if host == 'stalled.example.test': time.sleep(30)\n"
+            script += "    return real_host(host)\nsocket.gethostbyname = host_lookup\n"
         (directory / "sitecustomize.py").write_text(script)
         environment = patch.dict(os.environ, {"PYTHONPATH": os.pathsep.join([str(directory), *sys.path])})
         environment.start()
@@ -181,8 +190,8 @@ class LocalHttpsProbeTests(unittest.TestCase):
         cfg["route"].update(public_ip_urls=["https://stalled.example.test/ip"], source_timeout=3)
         started = time.monotonic()
         with self.assertRaisesRegex(probes.ProbeError, "route_verification_unavailable") as error:
-            probes.guard(cfg, "127.0.0.1", timeout=1.5)
-        self.assertLess(time.monotonic() - started, 2.5)
+            probes.guard(cfg, "127.0.0.1", timeout=3)
+        self.assertLess(time.monotonic() - started, 4)
         self.assertEqual(error.exception.details["sources"][0]["reason"], "timeout")
         self.assertFalse(error.exception.details["allow_measurement"])
 
@@ -242,4 +251,81 @@ class LocalHttpsProbeTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaisesRegex(probes.ProbeError, reason) as error:
                 probes.guard(self.route_config([path]), "127.0.0.1")
             self.assertFalse(error.exception.details["allow_measurement"])
+
+    @unittest.skipUnless(shutil.which("ip"), "Real route lookup requires iproute2")
+    def test_session_reuses_only_process_not_wan_evidence(self):
+        starts = self.child_environment(startup_delay=.1)
+        with ProbeSession() as session:
+            self.assertEqual(probes.resolve("127.0.0.1"), "127.0.0.1")
+            for _ in range(8):
+                self.assertTrue(probes.guard(self.route_config(["/json"]), "127.0.0.1")["verified"])
+            self.assertEqual(probes.resolve("127.0.0.2"), "127.0.0.2")
+            self.assertEqual(session.timings["probe_process_starts"], 1)
+            for key in ("dns_seconds", "wan_verification_seconds", "local_route_seconds", "https_witness_seconds", "probe_startup_seconds"):
+                self.assertGreater(session.timings[key], 0)
+            process = session.process
+        self.assertIsNotNone(process.poll())
+        self.assertEqual(starts.read_text().splitlines(), ["started"])
+        self.assertEqual(self.requests, [("/json", USER_AGENT)] * 8)
+
+    @unittest.skipUnless(shutil.which("ip"), "Real route lookup requires iproute2")
+    def test_session_stalled_witness_retires_worker_after_successful_fallback(self):
+        starts = self.child_environment(stalled_dns=True)
+        cfg = self.route_config(["/json"])
+        cfg["route"].update(public_ip_urls=["https://stalled.example.test/ip", self.base + "/json"], source_timeout=.25)
+        with ProbeSession() as session:
+            for _ in range(2):
+                started = time.monotonic()
+                result = probes.guard(cfg, "127.0.0.1", timeout=2)
+                self.assertLess(time.monotonic() - started, 1.5)
+                self.assertTrue(result["verified"])
+                self.assertEqual(result["sources"][0]["reason"], "timeout")
+                self.assertIsNone(session.process)
+            self.assertEqual(session.timings["probe_process_starts"], 2)
+        self.assertEqual(len(starts.read_text().splitlines()), 2)
+
+    def test_session_dns_timeout_preserves_classification_and_next_resolution(self):
+        self.child_environment(stalled_host=True)
+        with ProbeSession() as session:
+            started = time.monotonic()
+            with self.assertRaisesRegex(probes.ProbeError, "dns_error"):
+                probes.resolve("stalled.example.test", timeout=.5)
+            self.assertLess(time.monotonic() - started, 1.5)
+            self.assertIsNone(session.process)
+            self.assertEqual(probes.resolve("127.0.0.1", timeout=5), "127.0.0.1")
+            self.assertEqual(session.timings["probe_process_starts"], 2)
+
+    @unittest.skipUnless(shutil.which("ip"), "Real route lookup requires iproute2")
+    def test_session_hard_deadline_includes_startup_and_worker_is_reaped(self):
+        self.child_environment(startup_delay=30)
+        with ProbeSession() as session:
+            started = time.monotonic()
+            with self.assertRaisesRegex(probes.ProbeError, "route_verification_unavailable") as error:
+                probes.guard(self.route_config(["/json"]), "127.0.0.1", timeout=.5)
+            self.assertLess(time.monotonic() - started, 1.5)
+            self.assertFalse(error.exception.details["allow_measurement"])
+            self.assertIsNone(session.process)
+            self.assertGreaterEqual(session.timings["probe_startup_seconds"], .4)
+
+    @unittest.skipUnless(shutil.which("ip"), "Real route lookup requires iproute2")
+    def test_wan_changes_at_each_phase_boundary_block_measurement(self):
+        # Each fresh HTTPS observation can change while a worker is reused.
+        # Exercise download post-check, upload pre-check and upload post-check.
+        for changed_check in (1, 2, 3):
+            with self.subTest(changed_check=changed_check):
+                self.requests.clear()
+                self.responses[:] = [b'"192.0.2.1"'] * changed_check + [b'"198.51.100.1"']
+                cfg = self.route_config(["/transition"])
+                cfg.update(min_interval=0, retry_delay=0)
+                cfg["server_groups"]["primary"]["servers"][0]["host"] = "127.0.0.1"
+                cfg["server_groups"]["additional"]["servers"] = []
+                cfg["server_groups"]["emergency"]["servers"] = []
+                measurement = {"mbps": 1000, "measured_seconds": 10, "tcp_retransmits": 0}
+                with tempfile.TemporaryDirectory() as directory, patch.object(probes, "measure", return_value=measurement) as measure:
+                    result = Runner(cfg, Store(directory)).run()
+                self.assertEqual(result["status"], "route_blocked")
+                self.assertEqual(len(result["attempts"][0]["route_checks"]), changed_check + 1)
+                self.assertEqual(measure.call_count, 1 if changed_check < 3 else 2)
+                self.assertEqual(len(self.requests), changed_check + 1)
+                self.assertEqual(result["timings"]["probe_process_starts"], 1)
 

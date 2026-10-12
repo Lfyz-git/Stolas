@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import socket
 import tempfile
 import threading
 import unittest
@@ -72,14 +73,14 @@ class DiscoveryTests(unittest.TestCase):
 
     def topology(self, answers=None, facts=None):
         api = {"STOLAS_LISTEN": "127.0.0.1", "STOLAS_PORT": "8080", "STOLAS_API_TOKEN": "a" * 40}
-        with patch("builtins.input", side_effect=answers or ["docker"]) as prompt, patch.object(env, "port_state", return_value="free"):
+        with patch("builtins.input", side_effect=[*(answers or ["docker"]), "", "trusted"]) as prompt, patch.object(env, "port_state", return_value="free"):
             result = integrate.collect_topology(api, facts or self.discover(), self.root)
         return api, result, prompt.call_count
 
     def test_official_image_with_arbitrary_name_is_auto_selected(self):
         facts = self.discover()
         api, options, count = self.topology(facts=facts)
-        self.assertEqual(count, 1)  # Intent only; no container, IP or endpoint input.
+        self.assertEqual(count, 3)  # Placement, optional endpoint and HTTP trust.
         self.assertEqual(api["STOLAS_LISTEN"], "172.18.0.1")
         self.assertEqual(options["endpoint"], "http://172.18.0.1:8080")
         self.assertEqual(options["docker_id"], "abc")
@@ -90,7 +91,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_compose_metadata_detects_custom_image_and_requires_confirmation(self):
         self.container.update(image="private/automation-custom:v1", service="n8n", name="editor")
         _, result, count = self.topology(["docker", "1"])
-        self.assertEqual(count, 2)
+        self.assertEqual(count, 4)
         self.assertEqual(result["docker_container"], "editor")
 
     def test_workers_are_not_treated_as_editors(self):
@@ -113,7 +114,7 @@ class DiscoveryTests(unittest.TestCase):
         self.containers.append(second)
         _, result, count = self.topology(["docker", "2"])
         self.assertEqual(result["docker_id"], "second")
-        self.assertEqual(count, 2)
+        self.assertEqual(count, 4)
         self.assertIn("other-project", self.output.getvalue())
 
     def test_multiple_networks_offer_actual_interfaces(self):
@@ -121,7 +122,7 @@ class DiscoveryTests(unittest.TestCase):
         self.networks.append(dict(self.network, id="net2", name="secondary", ipam=[{"Gateway": "172.19.0.1"}]))
         self.addresses.append({"ifname": "br-secondary", "addr_info": [{"local": "172.19.0.1"}]})
         api, options, count = self.topology(["docker", "2"])
-        self.assertEqual(count, 2)
+        self.assertEqual(count, 4)
         self.assertEqual(api["STOLAS_LISTEN"], "172.19.0.1")
         self.assertEqual(options["network"], "secondary")
         self.assertIn("br-secondary", self.output.getvalue())
@@ -176,12 +177,12 @@ class DiscoveryTests(unittest.TestCase):
         self.container.update(mode="host", networks={})
         api, options, count = self.topology()
         self.assertEqual(options["endpoint"], "http://127.0.0.1:8080")
-        self.assertEqual(count, 1)
+        self.assertEqual(count, 2)
         self.assertEqual(api["STOLAS_LISTEN"], "127.0.0.1")
 
     def test_busy_port_selects_free_port_and_recomputes_endpoint(self):
         api = {"STOLAS_LISTEN": "127.0.0.1", "STOLAS_PORT": "8080"}
-        with patch("builtins.input", side_effect=["docker"]), patch.object(env, "port_state", side_effect=["busy", "free"]):
+        with patch("builtins.input", side_effect=["docker", "", "trusted"]), patch.object(env, "port_state", side_effect=["busy", "free", "free"]):
             result = integrate.collect_topology(api, self.discover(), self.root)
         self.assertEqual(result["endpoint"], "http://172.18.0.1:8081")
         self.assertIn("8080 занят", self.output.getvalue())
@@ -197,7 +198,7 @@ class DiscoveryTests(unittest.TestCase):
         request.assert_not_called()
 
     def test_remote_https_is_user_information_and_never_public_bind(self):
-        api, result, count = self.topology(["lan", "https://monitor.example.test"])
+        api, result, count = self.topology(["remote", "1", "https://monitor.example.test"])
         self.assertEqual(api["STOLAS_LISTEN"], "127.0.0.1")
         self.assertEqual(result["endpoint"], "https://monitor.example.test")
 
@@ -276,7 +277,7 @@ class DiscoveryTests(unittest.TestCase):
         api, options, _ = self.topology(facts=facts)
         choices = {"config": copy.deepcopy(install.DEFAULT), "api": api, "n8n": {**options, "mode": "keep"}}
         facts["addresses"] = facts["addresses"][:1]
-        with self.assertRaisesRegex(ValueError, "endpoint"):
+        with self.assertRaisesRegex(ValueError, "прослушивания|listener"):
             integrate.validate_discovered_endpoint(choices, facts)
 
     def test_legacy_draft_discards_integration_secrets_and_resumes_core(self):
@@ -348,13 +349,20 @@ class DockerNetworkIntegrationTests(unittest.TestCase):
                 selected = next(c for c in facts["n8n"] if c["id"] == container)
                 choices, reasons = env.host_candidates(selected, facts)
                 self.assertEqual(len(choices), 2, reasons)
-                for choice in choices:
-                    server = make_server(Runner(copy.deepcopy(install.DEFAULT), Store(root / "data")), (choice["address"], 0), "a" * 40)
+                for index, choice in enumerate(choices):
+                    with socket.socket() as listener:
+                        listener.bind((choice["address"], 0))
+                        port = listener.getsockname()[1]
+                    api = dict(STOLAS_API_TOKEN="a" * 40, STOLAS_LISTEN="127.0.0.1", STOLAS_PORT=str(port))
+                    with patch("builtins.input", side_effect=["docker", str(index + 1), "", "trusted"]):
+                        options = integrate.collect_topology(api, facts, root)
+                    integrate.validate_discovered_endpoint(dict(api=api, n8n={**options, "mode": "export"}), facts, root)
+                    self.assertEqual(api["STOLAS_LISTEN"], choice["address"])
+                    server = make_server(Runner(copy.deepcopy(install.DEFAULT), Store(root / "data")), (api["STOLAS_LISTEN"], int(api["STOLAS_PORT"])), "a" * 40)
                     thread = threading.Thread(target=server.serve_forever, daemon=True)
                     thread.start()
                     try:
-                        options = {"topology": "docker", "docker_id": container, "endpoint": f"http://{choice['address']}:{server.server_port}"}
-                        integrate.check_connection(root, options, {"STOLAS_API_TOKEN": "a" * 40}, ["docker", "compose"])
+                        integrate.check_connection(root, options, api, ["docker", "compose"])
                         with self.assertRaises(RuntimeError):
                             integrate.check_connection(root, options, {"STOLAS_API_TOKEN": "b" * 40}, ["docker", "compose"])
                     finally:
