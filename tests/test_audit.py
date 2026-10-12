@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -91,7 +92,10 @@ class WanAuditTests(unittest.TestCase):
             args = [args[0], "-c", "import time; time.sleep(30)"]
             return real_run(args, **kwargs)
         start = time.monotonic()
-        with patch("agent.probes.subprocess.run", side_effect=stalled), self.assertRaises(ProbeError) as error:
+        finished = threading.Event()
+        self.addCleanup(finished.set)
+        # DNS may ignore socket timeouts; it must not consume the fallback budget.
+        with patch("agent.probes.socket.getaddrinfo", side_effect=lambda *a, **k: finished.wait(30)), self.assertRaises(ProbeError) as error:
             probe_public_ip("https://no-network.test", 0.15)
         self.assertEqual(error.exception.kind, "timeout")
         self.assertLess(time.monotonic() - start, 3)

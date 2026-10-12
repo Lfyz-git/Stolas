@@ -1,8 +1,10 @@
 import ipaddress
 import json
 import math
+import queue
 import socket
 import subprocess
+import threading
 import time
 import urllib.request
 import urllib.error
@@ -35,7 +37,8 @@ def guard(cfg, address, timeout=12):
     code = "from agent.probes import guard_main; guard_main()"
     try:
         budget = min(timeout, cfg["route"]["verification_timeout"])
-        p = subprocess.run([sys.executable, "-c", code], input=json.dumps([cfg, address, max(0.01, budget - 0.2)]), capture_output=True, text=True, timeout=budget, check=True)
+        deadline = time.monotonic() + max(0.01, budget - 0.2)
+        p = subprocess.run([sys.executable, "-c", code], input=json.dumps([cfg, address, deadline]), capture_output=True, text=True, timeout=budget, check=True)
         data = json.loads(p.stdout)
         if "error" in data:
             raise ProbeError(data["error"], data.get("details"))
@@ -47,9 +50,10 @@ def guard(cfg, address, timeout=12):
 
 def guard_main():
     import sys
-    cfg, address, timeout = json.load(sys.stdin)
+    cfg, address, deadline = json.load(sys.stdin)
     try:
-        print(json.dumps(_guard(cfg, address, timeout)))
+        # Startup/import time belongs to the same deadline as route lookup and HTTPS.
+        print(json.dumps(_guard(cfg, address, max(0, deadline - time.monotonic()))))
     except ProbeError as e:
         print(json.dumps({"error": e.kind, "details": e.details}))
 
@@ -86,28 +90,36 @@ def _read_public_ip(url, timeout):
         raise ProbeError("connection_error") from None
 
 
-def public_ip_main():
-    import sys
-    url, timeout = json.load(sys.stdin)
-    try:
-        print(json.dumps({"ip": _read_public_ip(url, timeout)}))
-    except ProbeError as error:
-        print(json.dumps({"error": error.kind}))
-
-
 def probe_public_ip(url, timeout):
-    # Each witness gets a separate bounded child, including its DNS resolution.
-    import sys
+    # The guard already runs in an isolated process. A daemon worker bounds each
+    # witness, including DNS and slow response bodies, without another interpreter.
+    # Timed-out workers cannot publish late results to another witness's queue or
+    # delay guard-process exit; the parent still enforces the hard overall deadline.
+    if timeout <= 0:
+        raise ProbeError("timeout")
+    deadline = time.monotonic() + timeout
+    results = queue.Queue(maxsize=1)
+
+    def read():
+        try:
+            results.put((True, _read_public_ip(url, timeout)))
+        except ProbeError as error:
+            results.put((False, error))
+        except Exception:
+            results.put((False, ProbeError("probe_failed")))
+
+    threading.Thread(target=read, daemon=True).start()
     try:
-        result = subprocess.run([sys.executable, "-c", "from agent.probes import public_ip_main; public_ip_main()"],
-                                input=json.dumps([url, timeout]), capture_output=True, text=True, timeout=timeout, check=True)
-        data = json.loads(result.stdout)
-        if "error" in data:
-            raise ProbeError(data["error"])
-        return str(ipaddress.IPv4Address(data["ip"]))
-    except subprocess.TimeoutExpired:
+        ok, value = results.get(timeout=max(0, deadline - time.monotonic()))
+    except queue.Empty:
         raise ProbeError("timeout") from None
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+    if time.monotonic() >= deadline:
+        raise ProbeError("timeout")
+    if not ok:
+        raise value
+    try:
+        return str(ipaddress.IPv4Address(value))
+    except (ValueError, TypeError):
         raise ProbeError("probe_failed") from None
 
 
