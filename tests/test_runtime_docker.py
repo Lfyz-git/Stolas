@@ -133,7 +133,7 @@ class RuntimeDockerTests(unittest.TestCase):
         self.assert_neighbour()
 
     def test_fresh_local_measurement_api_and_clean_layout(self):
-        deploy.stage_sources(ROOT, self.root, "v0.6.3", "fixture")
+        initial = deploy.stage_sources(ROOT, self.root, "v0.6.3", "fixture")
         cfg = json.loads((ROOT / "config/example.json").read_text())
         cfg.update(min_interval=0, seconds=1, parallel=1, retry_delay=0)
         cfg["route"]["mode"] = "off"
@@ -148,6 +148,10 @@ class RuntimeDockerTests(unittest.TestCase):
         self.docker("run", "-d", "--name", server, "--network", "host", "--entrypoint", "iperf3", "stolas:ci", "-s", "-4", "-B", "127.0.0.1", "-p", str(port))
         self.addCleanup(lambda: self.docker("rm", "-f", server, check=False))
         self.assertEqual(self.installer(self.root), 0)
+        deploy.finalize(self.root, initial)
+        deploy.mark_backup(initial, "complete")
+        deploy.atomic_json(self.root / ".stolas/state/transaction.json",
+                           {"phase": "complete", "backup": initial.relative_to(self.root).as_posix(), "configured": False})
         self.assertEqual(self.api_latest()["status"], "ok")
         sample = self.api_latest()
         env = resources.read_env(self.root)
@@ -170,7 +174,7 @@ class RuntimeDockerTests(unittest.TestCase):
         configure("cooldown-fixture")
         blocked = cli("run", "--json")
         self.assertEqual(blocked.returncode, 1, blocked.stdout + blocked.stderr)
-        self.assertIn("Minimum interval", blocked.stderr)
+        self.assertEqual(json.loads(blocked.stderr.splitlines()[-1])["reason"], "Cooldown")
         configure("changed-during-cooldown")
         locker = "stolas-test-lock-" + self.suffix
         self.addCleanup(lambda: self.docker("rm", "-f", locker, check=False))
@@ -184,7 +188,7 @@ class RuntimeDockerTests(unittest.TestCase):
             self.fail("Measurement lock fixture did not start")
         blocked = cli("run", "--json")
         self.assertEqual(blocked.returncode, 1, blocked.stdout + blocked.stderr)
-        self.assertIn("already running", blocked.stderr)
+        self.assertEqual(json.loads(blocked.stderr.splitlines()[-1])["reason"], "Busy")
         configure("changed-during-measurement")
         self.assertEqual(self.docker("inspect", "--format", "{{.State.Running}}", locker).stdout.strip(), "true")
         self.docker("rm", "-f", locker)
