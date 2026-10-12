@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 import urllib.request
@@ -59,12 +60,14 @@ class RuntimeDockerTests(unittest.TestCase):
         for ref in self.owned_images:
             self.docker("image", "rm", ref, check=False)
 
-    def installer(self, target, configure_only=False, reuse=False, recover=False):
+    def installer(self, target, configure_only=False, reuse=False, recover=False, skip_first_test=False):
         args = [sys.executable, str(layout.code_root(target) / "tools/install.py"), "--root", str(target)]
         if configure_only:
             args.append("--configure-only")
         if reuse:
             args.append("--reuse-config")
+        if skip_first_test:
+            args.append("--skip-first-test")
         result = subprocess.run(args, input="apply\nlater\n", text=True, capture_output=True, env=install.clean_env(), timeout=240)
         self.assertIn(result.returncode, (0, 2), result.stdout + result.stderr)
         self.owned_images.add("stolas:" + resources.core_version(target))
@@ -130,7 +133,7 @@ class RuntimeDockerTests(unittest.TestCase):
         self.assert_neighbour()
 
     def test_fresh_local_measurement_api_and_clean_layout(self):
-        deploy.stage_sources(ROOT, self.root, "v0.6.2", "fixture")
+        initial = deploy.stage_sources(ROOT, self.root, "v0.6.3", "fixture")
         cfg = json.loads((ROOT / "config/example.json").read_text())
         cfg.update(min_interval=0, seconds=1, parallel=1, retry_delay=0)
         cfg["route"]["mode"] = "off"
@@ -145,7 +148,54 @@ class RuntimeDockerTests(unittest.TestCase):
         self.docker("run", "-d", "--name", server, "--network", "host", "--entrypoint", "iperf3", "stolas:ci", "-s", "-4", "-B", "127.0.0.1", "-p", str(port))
         self.addCleanup(lambda: self.docker("rm", "-f", server, check=False))
         self.assertEqual(self.installer(self.root), 0)
+        deploy.finalize(self.root, initial)
+        deploy.mark_backup(initial, "complete")
+        deploy.atomic_json(self.root / ".stolas/state/transaction.json",
+                           {"phase": "complete", "backup": initial.relative_to(self.root).as_posix(), "configured": False})
         self.assertEqual(self.api_latest()["status"], "ok")
+        sample = self.api_latest()
+        env = resources.read_env(self.root)
+        volume = env["STOLAS_DATA_VOLUME"]
+        before = resources.volume_info(self.root, ["docker"], volume)
+        def cli(*args, answer=""):
+            return subprocess.run(["sh", str(self.root / "stolas"), *args], input=answer,
+                                  capture_output=True, text=True, timeout=150, env=install.clean_env())
+        def configure(node):
+            cfg.update(node=node, min_interval=86400)
+            install.save_draft(self.root, {"config": cfg, "api": install.read_api(self.root), "completed": []})
+            result = cli("configure", answer="resume\napply\nlater\n")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("сервис и API проверены", result.stdout)
+            self.assertNotIn("Тест скорости (", result.stdout)
+            self.assertEqual(install.validated(self.root / "config/local.json")["node"], node)
+            self.assertEqual(deploy.read_json(self.root / ".stolas/state/transaction.json")["phase"], "complete")
+            self.assertEqual(self.api_latest()["id"], sample["id"])
+            self.assertEqual(resources.volume_info(self.root, ["docker"], volume), before)
+        configure("cooldown-fixture")
+        blocked = cli("run", "--json")
+        self.assertEqual(blocked.returncode, 1, blocked.stdout + blocked.stderr)
+        self.assertEqual(json.loads(blocked.stderr.splitlines()[-1])["reason"], "Cooldown")
+        configure("changed-during-cooldown")
+        locker = "stolas-test-lock-" + self.suffix
+        self.addCleanup(lambda: self.docker("rm", "-f", locker, check=False))
+        code = "import fcntl,time; f=open('/data/run.lock','a+b'); fcntl.flock(f,fcntl.LOCK_EX); print('ready',flush=True); time.sleep(600)"
+        self.docker("run", "-d", "--name", locker, "-v", volume + ":/data", "--entrypoint", "python3", "stolas:ci", "-c", code)
+        for _ in range(100):
+            if "ready" in self.docker("logs", locker).stdout:
+                break
+            time.sleep(.05)
+        else:
+            self.fail("Measurement lock fixture did not start")
+        blocked = cli("run", "--json")
+        self.assertEqual(blocked.returncode, 1, blocked.stdout + blocked.stderr)
+        self.assertEqual(json.loads(blocked.stderr.splitlines()[-1])["reason"], "Busy")
+        configure("changed-during-measurement")
+        self.assertEqual(self.docker("inspect", "--format", "{{.State.Running}}", locker).stdout.strip(), "true")
+        self.docker("rm", "-f", locker)
+        configure("repeat-retention-fixture")
+        backups = list((self.root / deploy.BACKUP_ROOT).iterdir())
+        self.assertEqual(len(backups), 3)
+        self.assertTrue(all(deploy.backup_state(self.root, p)["retention_status"] == "complete" for p in backups))
         self.assertEqual({p.name for p in self.root.iterdir()}, {"stolas", "compose.yaml", ".env", "config", ".stolas"})
         result = subprocess.run(["sh", str(self.root / "stolas"), "diagnose", "--json"], capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -169,15 +219,15 @@ class RuntimeDockerTests(unittest.TestCase):
         before = resources.volume_info(self.root, ["docker"], volume)
         # Exercise the complete updater and installer as root, then all management
         # operations as the original user. Never touch the host's real installs.
-        result = subprocess.run(["sudo", "-n", sys.executable, str(ROOT / "tools/deploy.py"), "--target", str(self.root), "--source-ref", "v0.6.2", "--action", "update"], input="apply\nlater\n", text=True, capture_output=True, cwd=ROOT, timeout=300)
+        result = subprocess.run(["sudo", "-n", sys.executable, str(ROOT / "tools/deploy.py"), "--target", str(self.root), "--source-ref", "v0.6.3", "--action", "update"], input="apply\nlater\n", text=True, capture_output=True, cwd=ROOT, timeout=300)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.owned_images.add("stolas:0.6.2")
+        self.owned_images.add("stolas:0.6.3")
         for path in self.root.rglob("*"):
             self.assertEqual(path.stat().st_uid, os.getuid(), str(path))
         binary = Path(self.tmp.name) / "commands"
         wrapper = Path(entrypoints.install(self.root, binary)["path"])
         with patch.object(deploy, "run_installer", side_effect=self.installer):
-            self.assertEqual(deploy.deploy(ROOT, self.root, ref="v0.6.2", action="update"), 0)
+            self.assertEqual(deploy.deploy(ROOT, self.root, ref="v0.6.3", action="update"), 0)
         # Select the first update's frozen v0.5.0 snapshot after exercising a
         # repeated update, covering a release without PATH ownership support.
         backups = sorted((self.root / ".stolas/backups/transactions").iterdir())
@@ -186,11 +236,8 @@ class RuntimeDockerTests(unittest.TestCase):
         env = {**install.clean_env(), "PATH": str(binary) + os.pathsep + os.environ["PATH"]}
         def cli(args, answer=""):
             return subprocess.run(["stolas", *args], cwd=self.tmp.name, env=env, input=answer, text=True, capture_output=True, timeout=150)
-        # The fixture's completed cycle stands in for a recovered first test;
-        # configure must not contact public speed-test servers in CI.
-        progress_path = self.root / ".stolas/state/progress.json"
-        progress = deploy.read_json(progress_path)
-        deploy.atomic_json(progress_path, {**progress, "stage": "measured", "measurement_done": True, "first_status": "ok"})
+        # Ordinary configure applies and checks the service without a fabricated
+        # completed-measurement checkpoint or external speed-test traffic.
         result = cli(["configure"], "apply\nlater\n")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         result = cli(["diagnose", "--json"])
@@ -210,7 +257,7 @@ class RuntimeDockerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(wrapper.exists())
         self.assertIsNotNone(resources.volume_info(self.root, ["docker"], volume))
-        self.assertIsNone(resources.image_info(self.root, ["docker"], "stolas:0.6.2"))
+        self.assertIsNone(resources.image_info(self.root, ["docker"], "stolas:0.6.3"))
         self.assertIsNone(resources.image_info(self.root, ["docker"], "stolas:0.5.0"))
         self.assert_neighbour()
         wrapper = Path(entrypoints.install(self.root, binary)["path"])

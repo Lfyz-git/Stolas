@@ -7,7 +7,7 @@ Stolas измеряет скорость IPv4 TCP через iperf3, храни�
 В SSH-терминале Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.6.2/bootstrap.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.6.3/bootstrap.sh | sh
 ```
 
 По умолчанию Stolas устанавливается в `~/stolas`, где пользователь может записывать файлы без `sudo`. Для другого каталога используйте `--dir PATH`, предварительно обеспечив право записи. Нужны Python 3.10+, `curl` или GNU `wget`,
@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/Lfyz-git/Stolas/v0.6.2/bootstrap.sh
 Если Docker доступен только через sudo, мастер и `stolas diagnose` покажут
 предупреждение.
 
-Обычные имена: проект и контейнер `stolas`, образ `stolas:0.6.2`.
+Обычные имена: проект и контейнер `stolas`, образ `stolas:0.6.3`.
 При конфликте мастер предложит выбрать имя экземпляра.
 В рабочем каталоге остаются `compose.yaml`, `.env`, `stolas`, `config/local.json`
 и служебный каталог `.stolas/`. Исходники сборки, состояние и резервные копии
