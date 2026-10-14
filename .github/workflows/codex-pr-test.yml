@@ -1,0 +1,54 @@
+
+name: Codex PR Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: [self-hosted, codex]
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Create test branch
+        run: |
+          git switch -c codex/test-${{ github.run_id }}
+
+      - name: Let Codex create a test file
+        run: |
+          codex exec --sandbox workspace-write \
+            "Create a file named codex-smoke-test.txt \
+            containing exactly STOLAS_CODEX_PR_OK \
+            followed by a newline. \
+            Do not modify any other files."
+
+      - name: Verify result
+        run: |
+          test "$(cat codex-smoke-test.txt)" = "STOLAS_CODEX_PR_OK"
+          test "$(git status --porcelain | wc -l)" -eq 1
+          git add -- codex-smoke-test.txt
+          git diff --cached --check
+
+      - name: Commit and create PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "test: verify autonomous Codex PR creation"
+          git -c credential.helper='!gh auth git-credential' \
+            push origin HEAD
+          gh pr create \
+            --base main \
+            --head "codex/test-${{ github.run_id }}" \
+            --title "Test: autonomous Codex PR" \
+            --body "Automated smoke test of the Stolas Codex runner."
