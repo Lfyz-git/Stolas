@@ -3,7 +3,6 @@ import argparse
 import calendar
 from contextlib import contextmanager
 from contextvars import ContextVar
-from collections import Counter
 import hashlib
 import json
 import os
@@ -13,6 +12,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import textwrap
 import time
 import uuid
 
@@ -132,12 +132,25 @@ def backup_warning(reason, key="operation"):
         report["reasons"][(key, reason)] = reason
 
 
+def old_restore_points(count):
+    if count % 10 == 1 and count % 100 != 11:
+        return f"Осталась {count} старая точка восстановления."
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return f"Остались {count} старые точки восстановления."
+    return f"Остались {count} старых точек восстановления."
+
+
+def restore_point_line(terminal, text, kind=None):
+    for line in textwrap.wrap(text, width=terminal.width - 2):
+        terminal.line("  " + line, kind)
+
+
 @contextmanager
 def backup_reporting(target):
     if BACKUP_REPORT.get() is not None:
         yield
         return
-    report = {"reasons": {}, "checked": False, "pruning": False}
+    report = {"reasons": {}, "checked": False, "pruning": False, "deleted": 0}
     token = BACKUP_REPORT.set(report)
     try:
         yield
@@ -145,37 +158,58 @@ def backup_reporting(target):
         try:
             if report["checked"] or report["reasons"]:
                 records, protected, phase = inspect_backups(target)
-                for path, state in records:
-                    if state is None:
-                        backup_warning("неизвестная запись или повреждённая/небезопасная структура", path)
-                    elif state.get("retention_status") == "pending" or path == protected and phase in ("prepared", "installed", "interrupted"):
-                        backup_warning("незавершённая транзакция защищена", path)
-                    elif state.get("retention_status") not in ("complete", "rolled_back"):
-                        backup_warning("нет непротиворечивого подтверждения завершения" if state.get("retention_status") is None else "неизвестный статус транзакции", path)
-                if not report["pruning"]:
-                    backup_warning("очистка не запускалась без успешной фиксации обслуживания", "not-committed")
                 normal = sum(state is not None and state.get("retention_status") in ("complete", "rolled_back")
                              and not (path == protected and phase in ("prepared", "installed", "interrupted"))
                              for path, state in records)
                 pending = sum(state is not None and (state.get("retention_status") == "pending" or
                               path == protected and phase in ("prepared", "installed", "interrupted")) for path, state in records)
-                unknown = len(records) - normal - pending
+                unchecked = sum(state is None for _, state in records)
+                old = len(records) - normal - pending - unchecked
                 from tools.terminal import ui
-                text = (f"Резервные копии транзакций: всего {len(records)}, обычных точек {normal}/{BACKUP_LIMIT}, "
-                        f"защищённых журналом {int(any(path == protected for path, _ in records))} (включены в общее число), "
-                        f"незавершённых исключений {pending}, неизвестных исключений {unknown}.")
-                if report["reasons"]:
-                    reasons = Counter(report["reasons"].values())
-                    text += " Безопасная очистка ограничена: " + "; ".join(f"{reason}: {count}" for reason, count in sorted(reasons.items()))
-                    text += (". Проверьте метаданные state.json и журналы в " + BACKUP_ROOT +
-                             "; устраните ошибки доступа/структуры и повторите обновление. Неизвестные копии требуют ручного аудита; возраст не подтверждает завершение.")
-                ui().result(text, "warning" if report["reasons"] else "success")
+                terminal = ui()
+                terminal.line()
+                terminal.line("Точки восстановления")
+                if normal:
+                    restore_point_line(terminal, f"Сохранено: {normal}")
+                if report["deleted"]:
+                    restore_point_line(terminal, f"Удалено устаревших: {report['deleted']}")
+                if old:
+                    restore_point_line(terminal, old_restore_points(old), "warning")
+                    restore_point_line(terminal, "Если они больше не нужны,")
+                    restore_point_line(terminal, "их можно удалить вручную")
+                    restore_point_line(terminal, "после проверки.")
+                if pending:
+                    restore_point_line(terminal, f"Незавершённых точек: {pending}", "warning")
+                    restore_point_line(terminal, "Не удаляйте их до завершения")
+                    restore_point_line(terminal, "восстановления установки.")
+                if unchecked:
+                    restore_point_line(terminal, f"Не удалось проверить: {unchecked}", "warning")
+                    restore_point_line(terminal, "Проверьте сохранённые файлы")
+                    restore_point_line(terminal, "и права доступа к ним.")
+                reasons = set(report["reasons"].values())
+                if "ошибка доступа или структуры при удалении" in reasons:
+                    restore_point_line(terminal, "Часть устаревших точек")
+                    restore_point_line(terminal, "не удалось удалить.", "warning")
+                    restore_point_line(terminal, "Проверьте права доступа")
+                    restore_point_line(terminal, "и сохранённые файлы.")
+                elif "платформа не поддерживает безопасное удаление" in reasons:
+                    restore_point_line(terminal, "Автоматическая очистка")
+                    restore_point_line(terminal, "недоступна в этой системе.", "warning")
+                elif not (old or unchecked) and reasons & {"не удалось записать подтверждённый статус", "повреждён сохранённый журнал", "некорректное свидетельство завершения", "предыдущий журнал нельзя использовать как свидетельство"}:
+                    restore_point_line(terminal, "Сведения о сохранённых точках")
+                    restore_point_line(terminal, "требуют ручной проверки.", "warning")
+                if not records and not report["deleted"]:
+                    restore_point_line(terminal, "Сохранённых точек нет.")
         except (OSError, ValueError, TypeError, AttributeError):
             from tools.terminal import ui
-            reasons = "; ".join(sorted(set(report["reasons"].values())))
-            ui().result("Резервные копии транзакций: общее число, обычные точки и исключения недоступны; "
-                        "безопасная очистка не выполнена. Причина: " + (reasons or "небезопасная структура или недоступные метаданные") +
-                        ". Проверьте структуру, журнал и права доступа в " + BACKUP_ROOT, "warning")
+            terminal = ui()
+            terminal.line()
+            terminal.line("Точки восстановления")
+            if report["deleted"]:
+                restore_point_line(terminal, f"Удалено устаревших: {report['deleted']}")
+            restore_point_line(terminal, "Не удалось проверить точки.", "warning")
+            restore_point_line(terminal, "Проверьте сохранённые файлы,")
+            restore_point_line(terminal, "ссылки и права доступа.")
         finally:
             BACKUP_REPORT.reset(token)
 
@@ -340,6 +374,11 @@ def retain_transaction_backups(target):
                 try:
                     backup_state(target, backup)
                     shutil.rmtree(backup)
+                    report = BACKUP_REPORT.get()
+                    if not backup.exists():
+                        report["deleted"] += 1
+                    else:
+                        backup_warning("ошибка доступа или структуры при удалении", backup)
                 except (OSError, ValueError, TypeError):
                     backup_warning("ошибка доступа или структуры при удалении", backup)
         except (OSError, ValueError, TypeError, AttributeError):
@@ -557,6 +596,29 @@ def rollback_files(target, backup, configure_only=False, preserve_manager=False)
     mark_backup(backup, "rolled_back")
 
 
+def update_result(target, code):
+    from tools.terminal import ui
+    terminal = ui()
+    if code in (0, 2):
+        journal = read_json(layout.bounded(target, ".stolas/state/transaction.json"))
+        status = read_json(layout.bounded(target, ".stolas/state/status.json"))
+        expected_stage = "complete" if code == 0 else "needs_attention"
+        if journal.get("phase") != "complete" or status.get("exit_code") != code or status.get("stage") != expected_stage:
+            raise RuntimeError("Обновление не завершено: изменения не зафиксированы")
+        version = layout.installed_version(target)
+        if version:
+            terminal.result("Stolas успешно обновлён до " + version)
+        else:
+            terminal.result("Обновление завершено; установленную версию определить не удалось.", "warning")
+            terminal.line("Проверьте локальные сведения об установленной версии: stolas version")
+    elif code == 3:
+        terminal.result("Обновление отменено.", "warning")
+    elif code == 130:
+        terminal.result("Обновление прервано.", "warning")
+    else:
+        terminal.result("Обновление не выполнено. Причина указана выше.", "error")
+
+
 def deploy(source, target, ref="checkout", digest="", action=None, configure_only=False):
     target = safe_path(target)
     pending_path = layout.bounded(target, ".stolas/state/transaction.json")
@@ -604,10 +666,10 @@ def deploy(source, target, ref="checkout", digest="", action=None, configure_onl
             if action == "rollback":
                 previous = read_json(journal)
                 if not previous.get("backup"):
-                    raise RuntimeError("Нет резервной копии для отката")
+                    raise RuntimeError("Нет точки восстановления для отката")
                 backup = layout.bounded(target, previous["backup"])
                 if not read_json(backup / "state.json").get("configured"):
-                    raise RuntimeError("Резервная копия не содержит предыдущую установленную версию")
+                    raise RuntimeError("Точка восстановления не содержит предыдущую установленную версию")
                 rollback_files(target, backup, configure_only, preserve_manager=True)
                 atomic_json(journal, {"phase": "rolled_back", "backup": backup.relative_to(target).as_posix()})
                 from tools.terminal import ui
@@ -629,17 +691,24 @@ def deploy(source, target, ref="checkout", digest="", action=None, configure_onl
                 atomic_json(diagnostic, {"stage": "complete" if code == 0 else "interrupted" if code == 130 else "needs_attention", "exit_code": code, "ref": ref})
             if backup:
                 atomic_json(journal, {"phase": "interrupted" if code == 130 or code == 1 and not configured else "rolled_back" if code in (1, 3) else "complete", "backup": backup.relative_to(target).as_posix(), "configured": configured})
+                if action == "update" and not configure_only:
+                    update_result(target, code)
                 if code in (0, 2):
                     try:
                         mark_backup(backup, "complete")
                     except (OSError, ValueError, TypeError):
                         backup_warning("не удалось записать подтверждённый статус", backup)
                     retain_transaction_backups(target)
+            elif action == "update" and not configure_only:
+                update_result(target, code)
             return code
         except BaseException:
             if backup:
                 rollback_files(target, backup, configure_only, preserve_manager=action == "rollback")
                 atomic_json(journal, {"phase": "rolled_back", "backup": backup.relative_to(target).as_posix(), "configured": configured})
+            if action == "update" and not configure_only:
+                from tools.terminal import ui
+                ui().result("Обновление не выполнено.", "error")
             raise
 
 
