@@ -298,3 +298,74 @@ jobs:
               issue_number: 32,
               body
             });
+
+  notify:
+    needs: [authorize, review, report]
+    if: >-
+      ${{
+        always() &&
+        needs.authorize.outputs.allowed == 'true'
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Notify n8n
+        uses: actions/github-script@v8
+        env:
+          WEBHOOK_URL: ${{ secrets.STOLAS_QUEUE_WEBHOOK_URL }}
+          WEBHOOK_AUTH: ${{ secrets.STOLAS_QUEUE_WEBHOOK_AUTH }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          REPORT_RESULT: ${{ needs.report.result }}
+        with:
+          script: |
+            const url = process.env.WEBHOOK_URL;
+            const auth = process.env.WEBHOOK_AUTH;
+
+            if (!url || !auth) {
+              core.setFailed('Webhook secrets are missing.');
+              return;
+            }
+
+            const conclusion =
+              process.env.REVIEW_RESULT === 'success' &&
+              process.env.REPORT_RESULT === 'success'
+                ? 'success'
+                : 'failure';
+
+            const runUrl =
+              `${context.serverUrl}/${context.repo.owner}/` +
+              `${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const response = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'stolas-codex-queue-git-cred': auth
+              },
+              body: JSON.stringify({
+                event: 'release_review_completed',
+                source: 'github-actions',
+                repository:
+                  `${context.repo.owner}/${context.repo.repo}`,
+                conclusion,
+                review_result: process.env.REVIEW_RESULT,
+                report_result: process.env.REPORT_RESULT,
+                run_id: context.runId,
+                run_url: runUrl,
+                timestamp: new Date().toISOString()
+              }),
+              signal: AbortSignal.timeout(15000)
+            });
+
+            if (!response.ok) {
+              core.setFailed(
+                `n8n webhook returned HTTP ${response.status}`
+              );
+              return;
+            }
+
+            core.info('Release review notification sent.');
