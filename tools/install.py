@@ -447,7 +447,7 @@ def print_plan(plan, facts, reuse=False):
     terminal.line("API: http://" + api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"])
     terminal.line("Токен API: сохранён / создан автоматически; скрыт")
     terminal.line()
-    terminal.line("Будет запущен Stolas Core." + (" Настройки и история сохраняются." if reuse else " Затем — один тест скорости."))
+    terminal.line("Будет запущен Stolas Core." + (" Настройки и история сохраняются." if reuse else ""))
     if not facts["docker"]["available"] and not shutil.which("docker"):
         terminal.line("Также будет установлен Docker Engine с Compose.")
 
@@ -622,7 +622,7 @@ def docker_command(root):
 
 
 def first_test(compose, root):
-    # Single cycle, same persistent volume and configuration as the API.
+    # Explicit CLI measurement, same persistent volume and configuration as the API.
     ui().line("\nТест скорости (может занять несколько минут)…")
     result = run(compose + ["exec", "-T", "--interactive=false", "stolas", "python3", "-m", "agent", "run"], root, capture=True, check=False, progress="Тест скорости", timeout=3600)
     if result.returncode not in (0, 2):
@@ -714,6 +714,7 @@ def request_json(base, path, token, body=None, n8n=False):
 
 
 def install(root=ROOT, configure_only=False, reuse=False, recover=False, skip_first_test=False):
+    # skip_first_test is a compatibility no-op for older management clients.
     layout.preflight(root)
     current = root / "config/local.json"
     existing = validated(current) if current.exists() else copy.deepcopy(DEFAULT)
@@ -727,16 +728,10 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False, skip_fi
     validate_plan(plan)
     cfg, api = plan["config"], plan["api"]
     progress_path = layout.state_path(root, ".stolas-progress.json")
-    previous_progress = json.loads(progress_path.read_text()) if progress_path.exists() else {}
     fingerprint = hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()
-    first_status = previous_progress.get("first_status")
-    measured = (previous_progress.get("config_sha256") == fingerprint and first_status is not None
-                and previous_progress.get("stage") != "complete"
-                and (previous_progress.get("stage") == "measured" or previous_progress.get("measurement_done")))
-    def checkpoint(stage, **extra):
+    def checkpoint(stage):
         save_draft(root, plan)
-        write_private(progress_path, json.dumps({"stage": stage, "config_sha256": fingerprint,
-                      "measurement_done": bool(measured), "first_status": first_status, **extra}) + "\n")
+        write_private(progress_path, json.dumps({"stage": stage, "config_sha256": fingerprint}) + "\n")
     # Validate before touching existing configuration or installing anything.
     with tempfile.TemporaryDirectory() as directory:
         check_path = Path(directory) / "config.json"
@@ -747,7 +742,6 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False, skip_fi
     checkpoint("configured")
     ui().result("настройки сохранены")
     if configure_only:
-        print("Настройки сохранены. Агент и тест скорости не запускались.")
         layout.state_path(root, ".stolas-draft.json").unlink()
         return 0
     ui().stage("Установка и проверка", 4)
@@ -769,35 +763,20 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False, skip_fi
     ui().result("API отвечает, авторизация проверена")
     if layout.runtime(root):
         resources.complete(root, compose[:compose.index("compose")])
-    if skip_first_test:
-        result = None
-        from tools.diagnostics import command
-        print("Настройки применены, сервис и API проверены. Тест скорости можно запустить отдельно: " + command(root, "run"))
-    elif reuse:
-        result = None
-        print("Сервис обновлён; конфигурация и история сохранены. Дополнительный нагрузочный тест не запускался.")
-    elif measured:
-        result = {"status": first_status}
-        print("Первичный CLI-цикл уже завершён до прерывания; повторный нагрузочный тест не запускается.")
+    if reuse:
+        ui().line("Конфигурация и история сохранены.")
     else:
-        result = first_test(compose, root)
-    if result:
-        first_status, measured = result["status"], True
-    checkpoint("measured", first_status=result["status"] if result else None)
-    ui().result("Stolas Core запущен")
+        ui().result("Stolas Core запущен")
     ui().line("API: http://" + api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"])
     ui().line("Токен API сохранён в .env; история — в Docker volume.")
     from tools.diagnostics import command
     ui().line("Результаты: " + command(root, "history"))
     ui().line("Логи: " + command(root, "logs"))
-    checkpoint("complete", first_status=result["status"] if result else None)
+    checkpoint("complete")
     layout.state_path(root, ".stolas-draft.json").unlink()
     if layout.runtime(root):
         from tools import entrypoints
         entrypoints.offer(root)
-    if result and result["status"] in ("route_blocked", "unavailable"):
-        ui().result("Агент установлен, но измерение не получено. Исправьте причину выше и повторите тест.", "warning")
-        return 2
     return 0
 
 
@@ -834,10 +813,10 @@ def commit_configuration(root, cfg, api):
 
 def main():
     parser = argparse.ArgumentParser(description="Интерактивная установка Stolas на Linux")
-    parser.add_argument("--configure-only", action="store_true", help="только записать настройки без установки и тестирования")
+    parser.add_argument("--configure-only", action="store_true", help="только записать настройки без запуска сервиса")
     parser.add_argument("--reuse-config", action="store_true", help="сохранить настройки при обновлении")
     parser.add_argument("--recover", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--skip-first-test", action="store_true", help="применить настройки и проверить сервис без нагрузочного теста")
+    parser.add_argument("--skip-first-test", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--diagnose", action="store_true", help="обнаружение без изменений, JSON без секретов")
     parser.add_argument("--root", type=Path, default=ROOT, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -857,7 +836,7 @@ def main():
         ui().result("Установка прервана. Повторите команду для продолжения.", "warning")
         return 130
     except subprocess.TimeoutExpired:
-        ui().result("Превышен лимит ожидания. Проверьте Docker и повторите установку; тест в контейнере мог продолжить работу.", "error")
+        ui().result("Превышен лимит ожидания. Проверьте Docker и повторите установку.", "error")
         return 124
     except (ValueError, RuntimeError, OSError, KeyError) as error:
         if isinstance(error, (OSError, KeyError)):
