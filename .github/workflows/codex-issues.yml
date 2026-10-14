@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   authorize:
+    if: github.event.issue.title != 'Stolas Release Control'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
 
