@@ -1,0 +1,147 @@
+
+name: Codex Queue Notifications
+
+on:
+  workflow_run:
+    workflows:
+      - Codex Issue Automation
+    types:
+      - completed
+
+  schedule:
+    - cron: "*/5 * * * *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: codex-queue-notifications
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Check queue and notify
+        uses: actions/github-script@v8
+        env:
+          WEBHOOK_URL: ${{ secrets.STOLAS_QUEUE_WEBHOOK_URL }}
+          WEBHOOK_AUTH: ${{ secrets.STOLAS_QUEUE_WEBHOOK_AUTH }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const workflow_id = 'codex-issues.yml';
+            const variableName =
+              'STOLAS_QUEUE_LAST_NOTIFIED_RUN';
+
+            const activeStatuses = [
+              'queued',
+              'in_progress',
+              'waiting',
+              'pending',
+              'requested'
+            ];
+
+            let activeCount = 0;
+
+            for (const status of activeStatuses) {
+              const response =
+                await github.rest.actions.listWorkflowRuns({
+                  owner,
+                  repo,
+                  workflow_id,
+                  status,
+                  per_page: 1
+                });
+
+              activeCount += response.data.total_count;
+            }
+
+            core.info(`Active or queued runs: ${activeCount}`);
+
+            if (activeCount > 0) {
+              core.info('Queue is not empty. No notification.');
+              return;
+            }
+
+            const completed =
+              await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id,
+                status: 'completed',
+                per_page: 100
+              });
+
+            if (completed.data.workflow_runs.length === 0) {
+              core.info('No completed runs. Nothing to report.');
+              return;
+            }
+
+            const latestRunId = Math.max(
+              ...completed.data.workflow_runs.map(run => run.id)
+            );
+
+            const variable =
+              await github.rest.actions.getRepoVariable({
+                owner,
+                repo,
+                name: variableName
+              });
+
+            const previousRunId =
+              Number(variable.data.value || '0');
+
+            core.info(`Latest run: ${latestRunId}`);
+            core.info(`Last notified: ${previousRunId}`);
+
+            if (latestRunId <= previousRunId) {
+              core.info('Queue already reported empty.');
+              return;
+            }
+
+            const url = process.env.WEBHOOK_URL;
+            const auth = process.env.WEBHOOK_AUTH;
+
+            if (!url || !auth) {
+              core.setFailed('Webhook configuration is missing.');
+              return;
+            }
+
+            const response = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'stolas-codex-queue-git-cred': auth
+              },
+              body: JSON.stringify({
+                event: 'queue_empty',
+                source: 'github-actions',
+                repository: `${owner}/${repo}`,
+                latest_run_id: latestRunId,
+                timestamp: new Date().toISOString()
+              }),
+              signal: AbortSignal.timeout(15000)
+            });
+
+            if (!response.ok) {
+              core.setFailed(
+                `Webhook failed with HTTP ${response.status}`
+              );
+              return;
+            }
+
+            await github.rest.actions.updateRepoVariable({
+              owner,
+              repo,
+              name: variableName,
+              value: String(latestRunId)
+            });
+
+            core.info('Queue empty notification delivered.');
