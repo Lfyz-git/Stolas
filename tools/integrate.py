@@ -34,8 +34,8 @@ def connection_url(value, topology=None):
         port = parsed.port
     except ValueError:
         raise ValueError("Неверный адрес или порт URL") from None
-    if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username
-            or parsed.password or parsed.query or parsed.fragment
+    if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or parsed.query or parsed.fragment
             or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value)):
         raise ValueError("Нужен URL http/https без логина, query и fragment")
     if parsed.netloc.endswith(":") or port is not None and not 1 <= port <= 65535:

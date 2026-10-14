@@ -1,6 +1,7 @@
 """Synthetic endpoint choices and real local HTTP/TLS transport boundaries."""
 import contextlib
 import io
+import os
 from pathlib import Path
 import socket
 import ssl
@@ -40,9 +41,16 @@ class TransportTests(unittest.TestCase):
         for value in ("ftp://service.example.test", "http://service.example.test:0",
                       "http://service.example.test:70000", "http://service.example.test:",
                       "http://service.example.test:abc", "http://[broken", "http://service.example.test/?q=1",
+                      "http://" + "@service.example.test", "http://" + ":@service.example.test",
                       "http://service.example.test/#fragment", "http://service.example.test/\x00"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 integrate.connection_url(value)
+
+    def test_warning_and_choices_fit_a_narrow_terminal(self):
+        with patch.dict(os.environ, {"COLUMNS": "40", "LINES": "24"}), contextlib.redirect_stdout(io.StringIO()) as output, patch("builtins.input", return_value="trusted"):
+            integrate.confirm_http("http://service.example.test", "n8n")
+        self.assertTrue(all(len(line) <= 40 for line in output.getvalue().splitlines()))
+        self.assertIn("X-N8N-API-KEY", output.getvalue())
 
     def test_fixed_network_diagnostics_do_not_expose_exception_payloads(self):
         for reason, expected in ((socket.gaierror("private-payload"), "DNS"),

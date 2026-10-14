@@ -177,7 +177,7 @@ class DiscoveryTests(unittest.TestCase):
         self.container.update(mode="host", networks={})
         api, options, count = self.topology()
         self.assertEqual(options["endpoint"], "http://127.0.0.1:8080")
-        self.assertEqual(count, 2)
+        self.assertEqual(count, 3)  # Placement, endpoint and explicit HTTP confirmation.
         self.assertEqual(api["STOLAS_LISTEN"], "127.0.0.1")
 
     def test_busy_port_selects_free_port_and_recomputes_endpoint(self):
