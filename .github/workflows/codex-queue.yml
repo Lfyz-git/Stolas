@@ -8,18 +8,9 @@ on:
     types:
       - completed
 
-  schedule:
-    - cron: "*/5 * * * *"
-
-  workflow_dispatch:
-
 permissions:
   contents: read
-  actions: write
-
-concurrency:
-  group: codex-queue-notifications
-  cancel-in-progress: false
+  actions: read
 
 jobs:
   notify:
@@ -37,8 +28,12 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const workflow_id = 'codex-issues.yml';
-            const variableName =
-              'STOLAS_QUEUE_LAST_NOTIFIED_RUN';
+            const eventRun = context.payload.workflow_run;
+
+            if (!eventRun || eventRun.status !== 'completed') {
+              core.info('Not a completed workflow run.');
+              return;
+            }
 
             const activeStatuses = [
               'queued',
@@ -66,10 +61,12 @@ jobs:
             core.info(`Active or queued runs: ${activeCount}`);
 
             if (activeCount > 0) {
-              core.info('Queue is not empty. No notification.');
+              core.info('Queue is not empty.');
               return;
             }
 
+            // Only the most recently completed run
+            // may generate a queue-empty notification.
             const completed =
               await github.rest.actions.listWorkflowRuns({
                 owner,
@@ -79,30 +76,26 @@ jobs:
                 per_page: 100
               });
 
-            if (completed.data.workflow_runs.length === 0) {
-              core.info('No completed runs. Nothing to report.');
+            const runs = completed.data.workflow_runs;
+
+            runs.sort((a, b) => {
+              const timeA = Date.parse(a.updated_at);
+              const timeB = Date.parse(b.updated_at);
+              return timeB - timeA || b.id - a.id;
+            });
+
+            const latestRun = runs[0];
+
+            if (!latestRun) {
+              core.info('No completed runs found.');
               return;
             }
 
-            const latestRunId = Math.max(
-              ...completed.data.workflow_runs.map(run => run.id)
-            );
+            core.info(`Event run: ${eventRun.id}`);
+            core.info(`Latest completed run: ${latestRun.id}`);
 
-            const variable =
-              await github.rest.actions.getRepoVariable({
-                owner,
-                repo,
-                name: variableName
-              });
-
-            const previousRunId =
-              Number(variable.data.value || '0');
-
-            core.info(`Latest run: ${latestRunId}`);
-            core.info(`Last notified: ${previousRunId}`);
-
-            if (latestRunId <= previousRunId) {
-              core.info('Queue already reported empty.');
+            if (eventRun.id !== latestRun.id) {
+              core.info('A newer completion exists.');
               return;
             }
 
@@ -110,7 +103,7 @@ jobs:
             const auth = process.env.WEBHOOK_AUTH;
 
             if (!url || !auth) {
-              core.setFailed('Webhook configuration is missing.');
+              core.setFailed('Webhook secrets are missing.');
               return;
             }
 
@@ -124,7 +117,8 @@ jobs:
                 event: 'queue_empty',
                 source: 'github-actions',
                 repository: `${owner}/${repo}`,
-                latest_run_id: latestRunId,
+                latest_run_id: eventRun.id,
+                conclusion: eventRun.conclusion,
                 timestamp: new Date().toISOString()
               }),
               signal: AbortSignal.timeout(15000)
@@ -132,16 +126,9 @@ jobs:
 
             if (!response.ok) {
               core.setFailed(
-                `Webhook failed with HTTP ${response.status}`
+                `Webhook returned HTTP ${response.status}`
               );
               return;
             }
 
-            await github.rest.actions.updateRepoVariable({
-              owner,
-              repo,
-              name: variableName,
-              value: String(latestRunId)
-            });
-
-            core.info('Queue empty notification delivered.');
+            core.info('Queue-empty event sent to n8n.');
