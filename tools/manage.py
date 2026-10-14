@@ -95,7 +95,7 @@ def preserve_legacy_manager(root):
     files = {name: path for name, path in runtime_files(ROOT).items()
              if name == "stolas" or name.startswith(".stolas/installer/")}
     if "stolas" not in files:
-        raise RuntimeError("Не найдена команда управления. Запустите удаление из полного архива v0.6.3")
+        raise RuntimeError("Не найдена команда управления. Запустите удаление из полного архива v0.6.4")
     previous = read_json(root / ".stolas/state/managed.json")
     for name in files:
         path = layout.bounded(root, name)
@@ -199,13 +199,16 @@ def update(root, version=None):
         with urllib.request.urlopen(req, timeout=20) as response:
             version = json.load(response)["tag_name"]
     if not re.fullmatch(r"v\d+\.\d+\.\d+", version):
-        raise ValueError("Версия должна иметь вид v0.6.3")
+        raise ValueError("Версия должна иметь вид v0.6.4")
     terminal.line("Версия: " + version)
     with tempfile.TemporaryDirectory(prefix="stolas-update-") as directory:
         path = Path(directory) / "bootstrap.sh"
         with urllib.request.urlopen("https://raw.githubusercontent.com/Lfyz-git/Stolas/" + version + "/bootstrap.sh", timeout=20) as response:
             path.write_bytes(response.read(1024 * 1024))
-        return subprocess.run(["sh", str(path), "--dir", str(root), "--ref", version, "--action", "update"], env=clean_env()).returncode
+        code = subprocess.run(["sh", str(path), "--dir", str(root), "--ref", version, "--action", "update"], env=clean_env()).returncode
+        if code not in (0, 2):
+            terminal.result("Обновление не завершено. Причина указана выше.", "error")
+        return code
 
 
 def main():
@@ -219,9 +222,10 @@ def main():
     history_format.add_argument("--json", action="store_true", help="исходный JSON с UTC")
     history_format.add_argument("--human", action="store_true", help="читаемая история в часовом поясе ОС")
     sub.add_parser("logs", help="смотреть логи")
+    sub.add_parser("version", help="показать установленную версию Stolas Core без сети и Docker")
     sub.add_parser("configure", help="изменить настройки")
     upgrade = sub.add_parser("update", help="обновить с сохранением истории")
-    upgrade.add_argument("--version", help="версия релиза, например v0.6.3")
+    upgrade.add_argument("--version", help="версия релиза, например v0.6.4")
     sub.add_parser("rollback", help="вернуть предыдущую версию")
     diagnose = sub.add_parser("diagnose", help="проверить окружение")
     diagnose.add_argument("--json", action="store_true", help="JSON без секретов")
@@ -241,6 +245,14 @@ def main():
         if args.action in (None, "help"):
             parser.print_help()
             return 0
+        if args.action == "version":
+            version = layout.installed_version(root)
+            if version:
+                ui().line("Stolas Core " + version)
+                return 0
+            ui().result("Не удалось определить установленную версию Stolas Core.", "warning")
+            ui().line("Проверьте, что команда запущена из установленного экземпляра Stolas и его файлы доступны.")
+            return 1
         if args.action == "command":
             if args.operation == "status":
                 record = entrypoints.read(root)

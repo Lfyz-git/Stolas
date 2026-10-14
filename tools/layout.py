@@ -2,9 +2,44 @@
 import os
 import errno
 import json
+import re
 from pathlib import Path
 
-VERSION = "0.6.3"
+VERSION = "0.6.4"
+
+
+def installed_version(root):
+    """Read Core metadata, never the version of a possibly newer manager."""
+    try:
+        journal = bounded(root, ".stolas/state/transaction.json")
+        if journal.is_file():
+            state = json.loads(journal.read_text(encoding="utf-8"))
+            if not isinstance(state, dict) or state.get("phase") not in ("complete", "rolled_back"):
+                return None
+        metadata = False
+        for name in (".stolas/state/managed.json", ".stolas-managed.json"):
+            path = bounded(root, name)
+            if not path.is_file():
+                continue
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return None
+            metadata = True
+            ref = data.get("ref")
+            if isinstance(ref, str) and re.fullmatch(r"v\d+\.\d+\.\d+", ref):
+                return ref
+            # A modern manifest supersedes any leftover legacy manifest.
+            break
+        if metadata or runtime(root):
+            compose = bounded(root, "compose.yaml")
+            if compose.is_file():
+                match = re.search(r"^\s+image:\s*[^\n]+:(\d+\.\d+\.\d+)\s*$",
+                                  compose.read_text(encoding="utf-8"), re.MULTILINE)
+                if match:
+                    return "v" + match.group(1)
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
 
 
 def runtime(root):

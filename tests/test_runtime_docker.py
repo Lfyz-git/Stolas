@@ -133,7 +133,7 @@ class RuntimeDockerTests(unittest.TestCase):
         self.assert_neighbour()
 
     def test_fresh_local_measurement_api_and_clean_layout(self):
-        initial = deploy.stage_sources(ROOT, self.root, "v0.6.3", "fixture")
+        initial = deploy.stage_sources(ROOT, self.root, "v0.6.4", "fixture")
         cfg = json.loads((ROOT / "config/example.json").read_text())
         cfg.update(min_interval=0, seconds=1, parallel=1, retry_delay=0)
         cfg["route"]["mode"] = "off"
@@ -219,15 +219,17 @@ class RuntimeDockerTests(unittest.TestCase):
         before = resources.volume_info(self.root, ["docker"], volume)
         # Exercise the complete updater and installer as root, then all management
         # operations as the original user. Never touch the host's real installs.
-        result = subprocess.run(["sudo", "-n", sys.executable, str(ROOT / "tools/deploy.py"), "--target", str(self.root), "--source-ref", "v0.6.3", "--action", "update"], input="apply\nlater\n", text=True, capture_output=True, cwd=ROOT, timeout=300)
+        result = subprocess.run(["sudo", "-n", sys.executable, str(ROOT / "tools/deploy.py"), "--target", str(self.root), "--source-ref", "v0.6.4", "--action", "update"], input="apply\nlater\n", text=True, capture_output=True, cwd=ROOT, timeout=300)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.owned_images.add("stolas:0.6.3")
+        self.assertIn("Stolas успешно обновлён до v0.6.4", " ".join(result.stdout.split()))
+        self.assertLess(result.stdout.index("успешно обновлён"), result.stdout.index("Точки восстановления"))
+        self.owned_images.add("stolas:0.6.4")
         for path in self.root.rglob("*"):
             self.assertEqual(path.stat().st_uid, os.getuid(), str(path))
         binary = Path(self.tmp.name) / "commands"
         wrapper = Path(entrypoints.install(self.root, binary)["path"])
         with patch.object(deploy, "run_installer", side_effect=self.installer):
-            self.assertEqual(deploy.deploy(ROOT, self.root, ref="v0.6.3", action="update"), 0)
+            self.assertEqual(deploy.deploy(ROOT, self.root, ref="v0.6.4", action="update"), 0)
         # Select the first update's frozen v0.5.0 snapshot after exercising a
         # repeated update, covering a release without PATH ownership support.
         backups = sorted((self.root / ".stolas/backups/transactions").iterdir())
@@ -236,6 +238,8 @@ class RuntimeDockerTests(unittest.TestCase):
         env = {**install.clean_env(), "PATH": str(binary) + os.pathsep + os.environ["PATH"]}
         def cli(args, answer=""):
             return subprocess.run(["stolas", *args], cwd=self.tmp.name, env=env, input=answer, text=True, capture_output=True, timeout=150)
+        result = cli(["version"])
+        self.assertEqual((result.returncode, result.stdout), (0, "Stolas Core v0.6.4\n"))
         # Ordinary configure applies and checks the service without a fabricated
         # completed-measurement checkpoint or external speed-test traffic.
         result = cli(["configure"], "apply\nlater\n")
@@ -247,6 +251,8 @@ class RuntimeDockerTests(unittest.TestCase):
         result = cli(["rollback"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(resources.core_version(self.root), "0.5.0")
+        result = cli(["version"])
+        self.assertEqual((result.returncode, result.stdout), (0, "Stolas Core v0.5.0\n"))
         result = cli(["history"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(sample["id"], result.stdout)
@@ -257,7 +263,7 @@ class RuntimeDockerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(wrapper.exists())
         self.assertIsNotNone(resources.volume_info(self.root, ["docker"], volume))
-        self.assertIsNone(resources.image_info(self.root, ["docker"], "stolas:0.6.3"))
+        self.assertIsNone(resources.image_info(self.root, ["docker"], "stolas:0.6.4"))
         self.assertIsNone(resources.image_info(self.root, ["docker"], "stolas:0.5.0"))
         self.assert_neighbour()
         wrapper = Path(entrypoints.install(self.root, binary)["path"])
