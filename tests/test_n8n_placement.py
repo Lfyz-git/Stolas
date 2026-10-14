@@ -33,7 +33,7 @@ class PlacementTests(unittest.TestCase):
             return integrate.collect_topology(self.api, self.facts, self.root, previous)
 
     def test_exactly_three_placement_choices_and_native_default(self):
-        options = self.collect(["native", ""])
+        options = self.collect(["native", "", "trusted"])
         self.assertEqual(options["endpoint"], "http://127.0.0.1:8080")
         text = self.output.getvalue()
         self.assertIn("1. n8n в Docker", text)
@@ -51,7 +51,7 @@ class PlacementTests(unittest.TestCase):
                 self.assertEqual(options["endpoint"], "http://" + address + ":8080")
                 self.assertTrue(options["http_trusted"])
                 self.assertFalse(options["endpoint_override"])
-        self.assertIn("Authorization без TLS", self.output.getvalue())
+        self.assertIn("Authorization: Bearer", self.output.getvalue())
 
     def test_remote_addresses_are_deterministic_and_bridge_is_last(self):
         expected = integrate.local_listener_candidates(self.facts)

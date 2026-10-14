@@ -16,6 +16,8 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import socket
+import ssl
 import subprocess
 import tempfile
 import urllib.error
@@ -51,7 +53,7 @@ LABELS = {
     "export": "Подготовить файл для импорта", "connect": "Подключить", "create": "Создать credential Stolas API", "later": "Отложить", "keep": "Сохранить",
     "docker": "n8n в Docker на хосте Stolas", "native": "n8n без Docker на хосте Stolas",
     "remote": "n8n на другом хосте", "change": "Выбрать другой listener",
-    "trusted": "Да, сеть доверенная", "allow_bind": "Да, разрешить этот listener",
+    "trusted": "Продолжить с HTTP", "allow_bind": "Да, разрешить этот listener",
     "alerts_only": "Только проблемы", "every_measurement": "Каждый результат", "daily_summary": "Сводка за сутки",
     "local": "Только на этой машине (рекомендуется)", "network": "В доверенной сети",
 }
@@ -664,6 +666,10 @@ def first_test(compose, root):
     return data
 
 
+class ServiceRequestError(RuntimeError):
+    """A fixed diagnostic safe to display without URL, response body or secrets."""
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # Do not forward API keys or bearer tokens across redirects.
@@ -680,9 +686,31 @@ def request_json(base, path, token, body=None, n8n=False):
         with urllib.request.build_opener(NoRedirect).open(req, timeout=20) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
-        raise RuntimeError(f"HTTP {error.code} при обращении к {path}. Проверьте URL, API key и права доступа.") from None
-    except (urllib.error.URLError, TimeoutError, OSError):
-        raise RuntimeError("Сервис недоступен; проверьте URL, TLS и сетевой доступ.") from None
+        try:
+            if 300 <= error.code < 400:
+                message = "Сервис вернул перенаправление; запрос с ключом не перенаправлен. Укажите конечный URL."
+            else:
+                message = f"Сервис ответил HTTP {error.code}. Проверьте URL, API key и права доступа."
+        finally:
+            error.close()
+        raise ServiceRequestError(message) from None
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        reason = error.reason if isinstance(error, urllib.error.URLError) else error
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            message = "Сертификат HTTPS не прошёл проверку. Проверьте имя, срок действия и доверие к CA."
+        elif isinstance(reason, ssl.SSLError):
+            message = "Не удалось установить TLS-соединение. Проверьте HTTPS endpoint и настройку TLS сервиса."
+        elif isinstance(reason, socket.gaierror):
+            message = "Не удалось разрешить имя сервиса. Проверьте имя и DNS."
+        elif isinstance(reason, ConnectionRefusedError):
+            message = "Сервис отклонил соединение. Проверьте адрес, порт и запущен ли сервис."
+        elif isinstance(reason, TimeoutError):
+            message = "Истекло время ожидания сервиса. Проверьте доступность указанного адреса."
+        else:
+            message = "Сервис недоступен; проверьте URL, TLS и сетевой доступ."
+        raise ServiceRequestError(message) from None
+    except (ValueError, UnicodeError):
+        raise ServiceRequestError("Сервис вернул некорректный JSON; проверьте адрес API и совместимость сервиса.") from None
 
 
 def install(root=ROOT, configure_only=False, reuse=False, recover=False, skip_first_test=False):

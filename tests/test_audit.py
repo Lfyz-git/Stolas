@@ -276,7 +276,7 @@ class TopologyAuditTests(unittest.TestCase):
             answers = [topology]
             if topology == "remote": answers += ["1"]
             answers += [""]
-            if topology != "native": answers += ["trusted"]
+            answers += ["trusted"]
             facts = {"docker": {"available": True}, "stolas": [], "addresses": [{"address": "10.8.0.1", "interface": "wg0"}, {"address": "172.20.0.1", "interface": "br-test"}],
                      "n8n": [{"name": "automation", "id": "container-id", "image": "n8nio/n8n:2", "mode": "default", "confidence": "image", "networks": {"default": {"Gateway": "172.20.0.1", "NetworkID": "net"}}}],
                      "networks": {"net": {"driver": "bridge", "ipam": [{"Gateway": "172.20.0.1"}]}}}
