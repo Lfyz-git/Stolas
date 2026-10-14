@@ -37,11 +37,15 @@ jobs:
             const pr = response.data;
             const botAuthor = pr.user.login === 'github-actions[bot]' ||
               (pr.user.type === 'Bot' && pr.user.login.endsWith('[bot]'));
-            const valid = pr.state === 'open' && botAuthor &&
-              pr.head.repo.full_name === `${owner}/${repo}` &&
-              pr.base.ref === 'main' &&
-              /^codex\/issue-\d+-\d+$/.test(pr.head.ref) &&
-              pr.maintainer_can_modify !== false;
+            const checks = {
+              open: pr.state === 'open',
+              botAuthor,
+              sameRepository: pr.head.repo.full_name === `${owner}/${repo}`,
+              mainBase: pr.base.ref === 'main',
+              codexBranch: /^codex\/issue-\d+-\d+$/.test(pr.head.ref)
+            };
+            const valid = Object.values(checks).every(Boolean);
+            core.info(`PR #${number} authorization checks: ${JSON.stringify(checks)}`);
             core.setOutput('allowed', String(valid));
             if (!valid) {
               core.info('PR does not meet trusted PR policy.');
