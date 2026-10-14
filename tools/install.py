@@ -52,18 +52,17 @@ LABELS = {
     "sequential": "По очереди", "random": "В случайном порядке",
     "export": "Подготовить файл для импорта", "connect": "Подключить", "create": "Создать credential Stolas API", "later": "Отложить", "keep": "Сохранить",
     "docker": "n8n в Docker на хосте Stolas", "native": "n8n без Docker на хосте Stolas",
-    "remote": "n8n на другом хосте", "change": "Выбрать другой listener",
-    "trusted": "Продолжить с HTTP", "allow_bind": "Да, разрешить этот listener",
+    "remote": "n8n на другом хосте", "change": "Выбрать другой адрес API",
+    "trusted": "Продолжить с HTTP", "allow_bind": "Да, разрешить этот адрес API",
     "alerts_only": "Только проблемы", "every_measurement": "Каждый результат", "daily_summary": "Сводка за сутки",
     "local": "Только на этой машине (рекомендуется)", "network": "В доверенной сети",
 }
 GROUP_LABELS = {"primary": "Основные", "additional": "Дополнительные", "emergency": "Аварийные"}
 
 
-def ask(label, default="", convert=str, secret=False):
+def ask(label, default="", convert=str, secret=False, *, help_text=None, options=()):
     terminal = ui()
-    terminal.line()
-    terminal.line(label)
+    terminal.question(label, help_text=help_text, options=options)
     if secret:
         terminal.line("Ввод скрыт." + (" Enter сохраняет значение." if default else ""))
     while True:
@@ -84,17 +83,10 @@ def ask(label, default="", convert=str, secret=False):
             return convert(raw.strip() if raw.strip() else default)
         except (ValueError, TypeError, ZoneInfoNotFoundError) as error:
             explanation = str(error) if not secret else getattr(convert, "description", "проверьте формат секрета")
-            terminal.line()
             terminal.result(explanation or "проверьте формат значения", "error")
 
 
-def choice(label, values, default):
-    terminal = ui()
-    terminal.line()
-    terminal.line(label)
-    terminal.line()
-    for i, value in enumerate(values, 1):
-        terminal.line(f"  {i}. {LABELS.get(value, value)}")
+def choice(label, values, default, *, help_text=None):
     def parse(value):
         if str(value).isdigit() and 1 <= int(value) <= len(values):
             return values[int(value) - 1]
@@ -102,7 +94,7 @@ def choice(label, values, default):
             raise ValueError(f"введите номер от 1 до {len(values)}")
         return value.lower()
     number = str(values.index(default) + 1) if default in values else ""
-    return ask("Выберите вариант", number, parse)
+    return ask(label, number, parse, help_text=help_text, options=[LABELS.get(value, value) for value in values])
 
 
 def integer(low, high=None):
@@ -243,7 +235,7 @@ def write_private(path, content):
 
 def collect_config(existing):
     cfg = copy.deepcopy(existing)
-    print("\nНастройки измерений. Enter оставляет предложенное значение.")
+    ui().stage("Настройки измерений")
     cfg["node"] = ask("Имя узла", cfg["node"], matching(r"[\w.-]{1,64}"))
     fields = [
         ("seconds", "Секунд на каждое направление", 1, 60),
@@ -265,8 +257,7 @@ def collect_config(existing):
         ui().result(f"Таймаут одного iperf3 должен быть не меньше {minimum} секунд.", "error")
         cfg["process_timeout"] = ask("Таймаут одного iperf3", minimum, integer(minimum, 120))
     cfg["bind_address"] = ask("Локальный IPv4 для iperf3 (-: автоматически)", cfg["bind_address"] or "", lambda v: optional(v, lambda ip: str(ipaddress.IPv4Address(ip))))
-    ui().line("\nПроверка канала сравнивает внешний IP до и после измерений.")
-    ui().line("Для строгого запрета тестирования через LTE закрепите трафик на маршрутизаторе.")
+    ui().stage("Проверка интернет-канала")
     route = cfg["route"]
     route["mode"] = choice("Проверять основной канал перед тестами?", ("required", "off"), route["mode"])
     route["public_ip_urls"] = ask("HTTPS источники внешнего IPv4 через запятую", ",".join(route["public_ip_urls"]), lambda value: list(dict.fromkeys(https_url(item.strip()) for item in value.split(","))))
@@ -276,8 +267,7 @@ def collect_config(existing):
     route["expected_public_cidrs"] = ask("Внешний IPv4 основного WAN /32 или CIDR через запятую" + (" (-: очистить)" if route["mode"] == "off" else ""), ",".join(route["expected_public_cidrs"]), lambda v: [] if route["mode"] == "off" and v in ("", "-") else cidrs(v))
     for key, label in (("interface", "Интерфейс Linux"), ("gateway", "Шлюз Linux")):
         route[key] = ask(label + " (-: не проверять)", route[key] or "", lambda v: optional(v, matching(r"[\w.:-]{1,64}")))
-    ui().line("\nГруппы серверов iperf3. В каждой можно задать любое количество серверов.")
-    ui().line("По очереди — с сохранением позиции; случайно — без повторов внутри цикла.")
+    ui().stage("Серверы измерений")
     descriptions = {
         "primary": "Основные: обычный замер; сначала перебираются серверы этой группы",
         "additional": "Дополнительные: подтверждение низкой скорости или подмена недоступных основных",
@@ -285,22 +275,21 @@ def collect_config(existing):
     }
     all_servers = []
     for name in GROUPS:
-        ui().line(descriptions[name])
         group = cfg["server_groups"][name]
-        group["selection"] = choice("Выбор сервера — " + GROUP_LABELS[name].lower(), ("sequential", "random"), group["selection"])
+        group["selection"] = choice("Выбор сервера — " + GROUP_LABELS[name].lower(), ("sequential", "random"), group["selection"], help_text=descriptions[name])
         count = ask("Количество серверов — " + GROUP_LABELS[name].lower(), len(group["servers"]), integer(1 if name == "primary" else 0))
         result = []
         for index in range(count):
             server = copy.deepcopy(group["servers"][index]) if index < len(group["servers"]) else dict(id=f"{name}-{index + 1}", host="", ports=[5201], min_download_mbps=500, min_upload_mbps=500)
-            ui().line(f"{GROUP_LABELS[name]}: сервер {index + 1}")
-            for key, label, pattern in (("id", "Идентификатор", r"[a-zA-Z0-9_-]{1,64}"), ("host", "Hostname или IPv4", r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}")):
+            ui().stage(f"{GROUP_LABELS[name]}: сервер {index + 1}")
+            for key, label, pattern in (("id", "Идентификатор", r"[a-zA-Z0-9_-]{1,64}"), ("host", "Имя хоста или IPv4", r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}")):
                 while True:
                     server[key] = ask(label, server[key], matching(pattern))
                     if all(s[key].lower() != server[key].lower() for s in all_servers):
                         break
                     ui().result("Серверы во всех группах должны иметь разные имена и адреса.", "error")
             server["ports"] = ask("Порты через запятую (максимум 9)", ",".join(map(str, server["ports"])), ports)
-            for key, label in (("min_download_mbps", "Минимальный download, Mbps"), ("min_upload_mbps", "Минимальный upload, Mbps")):
+            for key, label in (("min_download_mbps", "Минимальная скорость загрузки, Мбит/с"), ("min_upload_mbps", "Минимальная скорость отправки, Мбит/с")):
                 server[key] = ask(label, server[key], number)
             result.append(server)
             all_servers.append(server)
@@ -322,13 +311,11 @@ def read_api(root):
     return values
 
 
-def select_named(label, items, names, default=0, automatic=True):
+def select_named(label, items, names, default=0, automatic=True, *, help_text=None):
     if len(items) == 1 and automatic:
         ui().result(label + ": " + names[0])
         return items[0]
-    for index, name in enumerate(names, 1):
-        ui().line(f"  {index}. {name}")
-    index = ask(label + " — номер варианта", default + 1, integer(1, len(items)))
+    index = ask(label, default + 1, integer(1, len(items)), help_text=help_text, options=names)
     return items[index - 1]
 
 
@@ -337,7 +324,6 @@ def propose_port(api, facts, root):
     if (root / ".env").is_file():
         saved = read_api(root)
         if saved["STOLAS_LISTEN"] == address and saved["STOLAS_PORT"] == str(initial):
-            ui().line(f"Сохранённый endpoint {address}:{initial} не изменяется автоматически.")
             return
     for port in range(initial, min(65536, initial + 100)):
         state = environment.port_state(address, port)
@@ -360,7 +346,7 @@ def check_api_port(api, facts, allow_existing=False):
         raise RuntimeError(facts["docker"]["reason"] + ". Старый сервис не остановлен; восстановите доступ к Docker")
     bindings = [b for b in facts.get("port_bindings", []) if b["port"] == port and (address in ("0.0.0.0", "::") or b["address"] in (address, "0.0.0.0", "::", ""))]
     if any(not b["owned"] for b in bindings):
-        raise RuntimeError(f"Конфликт {address}:{port} подтверждён Docker: порт опубликован посторонним контейнером. Старый Stolas не остановлен; освободите endpoint или явно измените настройку")
+        raise RuntimeError(f"Конфликт {address}:{port} подтверждён Docker: порт опубликован посторонним контейнером. Старый Stolas не остановлен; освободите адрес API или явно измените настройку")
     state = environment.port_state(address, port)
     if state == "free":
         return
@@ -514,18 +500,10 @@ def collect_plan(root, existing, facts, reuse=False):
             if section == "wan":
                 ui().stage("Проверка интернет-канала", 2)
                 route = candidate["config"]["route"]
-                ui().line("Основной канал: пока не подтверждён")
-                ui().line("Разрешённые IP: " + (", ".join(route["expected_public_cidrs"]) or "не заданы"))
-                ui().line()
-                ui().line("Перед тестом Stolas сверит внешний IP с разрешёнными адресами.")
                 route["mode"] = choice("Проверять основной канал перед тестами?", ("required", "off"), route["mode"])
                 if route["mode"] == "required":
-                    ui().line()
-                    ui().line("Укажите внешний IPv4 основного подключения или диапазон провайдера.")
-                    ui().line("Например: 203.0.113.10/32. При смене адреса настройку нужно обновить.")
-                    route["expected_public_cidrs"] = ask("Разрешённые IP (через запятую)", ",".join(route["expected_public_cidrs"]), cidrs)
+                    route["expected_public_cidrs"] = ask("Разрешённые IP (через запятую)", ",".join(route["expected_public_cidrs"]), cidrs, help_text="Внешний IPv4 основного подключения или диапазон провайдера.")
             elif section == "measurements":
-                ui().stage("Параметры измерений")
                 candidate["config"] = collect_config(candidate["config"])
             elif section == "api":
                 ui().stage("Доступ к API")
@@ -699,7 +677,7 @@ def request_json(base, path, token, body=None, n8n=False):
         if isinstance(reason, ssl.SSLCertVerificationError):
             message = "Сертификат HTTPS не прошёл проверку. Проверьте имя, срок действия и доверие к CA."
         elif isinstance(reason, ssl.SSLError):
-            message = "Не удалось установить TLS-соединение. Проверьте HTTPS endpoint и настройку TLS сервиса."
+            message = "Не удалось установить TLS-соединение. Проверьте HTTPS-адрес и настройку TLS сервиса."
         elif isinstance(reason, socket.gaierror):
             message = "Не удалось разрешить имя сервиса. Проверьте имя и DNS."
         elif isinstance(reason, ConnectionRefusedError):
@@ -747,15 +725,12 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False, skip_fi
     checkpoint("configured")
     ui().result("настройки сохранены")
     if configure_only:
-        print("Настройки сохранены. Агент и тест скорости не запускались.")
         layout.state_path(root, ".stolas-draft.json").unlink()
         return 0
     ui().stage("Установка и проверка", 4)
     compose = docker_command(root)
     run(compose + ["config", "--quiet"], root)
-    ui().line("Сборка образа — первый запуск может занять несколько минут…")
     run(compose + ["--progress", "plain", "build", "stolas"], root, progress="Сборка образа", timeout=1800)
-    ui().result("образ собран")
     run(compose + ["run", "--rm", "--no-deps", "stolas", "validate"], root, progress="Проверка конфигурации")
     same_endpoint = old_api and all(old_api[k] == api[k] for k in ("STOLAS_LISTEN", "STOLAS_PORT"))
     check_api_port(api, environment.discover(root), allow_existing=bool(same_endpoint))
@@ -772,20 +747,21 @@ def install(root=ROOT, configure_only=False, reuse=False, recover=False, skip_fi
     if skip_first_test:
         result = None
         from tools.diagnostics import command
-        print("Настройки применены, сервис и API проверены. Тест скорости можно запустить отдельно: " + command(root, "run"))
+        ui().line("Настройки применены, сервис и API проверены. Тест скорости можно запустить отдельно: " + command(root, "run"))
     elif reuse:
         result = None
-        print("Сервис обновлён; конфигурация и история сохранены. Дополнительный нагрузочный тест не запускался.")
+        ui().line("Сервис обновлён; конфигурация и история сохранены. Дополнительный нагрузочный тест не запускался.")
     elif measured:
         result = {"status": first_status}
-        print("Первичный CLI-цикл уже завершён до прерывания; повторный нагрузочный тест не запускается.")
+        ui().line("Первичный CLI-цикл уже завершён до прерывания; повторный нагрузочный тест не запускается.")
     else:
         result = first_test(compose, root)
     if result:
         first_status, measured = result["status"], True
     checkpoint("measured", first_status=result["status"] if result else None)
     ui().result("Stolas Core запущен")
-    ui().line("API: http://" + api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"])
+    if recover:
+        ui().line("API: http://" + api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"])
     ui().line("Токен API сохранён в .env; история — в Docker volume.")
     from tools.diagnostics import command
     ui().line("Результаты: " + command(root, "history"))

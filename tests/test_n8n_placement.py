@@ -121,7 +121,7 @@ class PlacementTests(unittest.TestCase):
                 self.assertEqual(self.api["STOLAS_PORT"], "9090")
                 self.assertEqual(options["topology"], "remote")
                 self.assertEqual(options["endpoint"], "https://stolas.example.test")
-        self.assertIn("Сохранить текущий listener", self.output.getvalue())
+        self.assertIn("Сохранить текущий адрес API", self.output.getvalue())
 
     def test_legacy_migration_can_cancel_before_any_file_changes(self):
         before = dict(self.api)

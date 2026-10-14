@@ -13,7 +13,7 @@ class Terminal:
 
     @property
     def width(self):
-        return max(32, min(80, shutil.get_terminal_size((80, 24)).columns))
+        return max(12, min(80, shutil.get_terminal_size((80, 24)).columns))
 
     def style(self, value, kind):
         enabled = self.stream.isatty() and "NO_COLOR" not in os.environ and os.getenv("TERM", "") not in ("", "dumb")
@@ -35,7 +35,20 @@ class Terminal:
         self.line("─" * self.width, "heading")
         self.line()
 
+    def question(self, label, *, help_text=None, options=()):
+        """Render a question and its context as one separated block."""
+        self.line()
+        self.line(label, "prompt")
+        if help_text:
+            self.line(help_text)
+        if options:
+            self.line()
+            for index, option in enumerate(options, 1):
+                self.line(f"  {index}. {option}")
+        self.stream.flush()
+
     def result(self, value, kind="success"):
+        self.line()
         self.line(("Ошибка: " if kind == "error" else "Внимание: " if kind == "warning" else "Готово: ") + value, kind)
 
 

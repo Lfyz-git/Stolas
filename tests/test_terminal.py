@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import io
 import os
 from pathlib import Path
@@ -56,10 +57,56 @@ class TerminalTests(unittest.TestCase):
         for field in ("n8n", "Telegram", "required", "route.mode", "gateway"):
             self.assertNotIn(field, output)
         self.assertIn("Проверять основной канал перед тестами?\n\n  1.", output)
-        self.assertIn("\n\nВыберите вариант\nВвод [1]:", output)
+        self.assertNotIn("Выберите вариант", output)
+        self.assertIn("  2. Нет, пропускать проверку\nВвод [1]:", output)
         self.assertIn("Шаг 4 из 4", output)
         self.assertIn("Готово: Stolas Core запущен", output)
         self.assertTrue(all(len(line) <= 80 for line in output.splitlines()))
+
+    def test_wizards_at_narrow_width(self):
+        from terminal_session import session
+        from tools import integrate
+        for width in (24, 40, 80):
+            for mode, options, answers in (
+                ("установка", {}, ["off", "apply"]),
+                ("обновление", {"reuse": True}, ["apply"]),
+                ("настройка", {"configure_only": True}, ["off", "apply"]),
+            ):
+                with self.subTest(width=width, mode=mode):
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output), patch.dict(os.environ, {"COLUMNS": str(width), "TERM": "dumb"}), patch("builtins.input", side_effect=answers):
+                        self.assertEqual(session(**options), 0)
+                    text = output.getvalue()
+                    self.assertTrue(all(len(line) <= width for line in text.splitlines()))
+                    self.assertNotIn("Выберите вариант", text)
+                    self.assertEqual(" ".join(text.split()).count("Готово: настройки сохранены"), 1)
+            output = io.StringIO()
+            cfg = copy.deepcopy(install.DEFAULT)
+            cfg["route"]["expected_public_cidrs"] = ["192.0.2.1/32"]
+            with contextlib.redirect_stdout(output), patch.dict(os.environ, {"COLUMNS": str(width), "TERM": "dumb"}), patch("builtins.input", return_value=""):
+                self.assertEqual(install.collect_config(cfg), cfg)
+            self.assertTrue(all(len(line) <= width for line in output.getvalue().splitlines()))
+            output = io.StringIO()
+            facts = {"docker": {"available": True}, "n8n": [], "stolas": []}
+            api = {"STOLAS_LISTEN": "127.0.0.1", "STOLAS_PORT": "8080"}
+            with contextlib.redirect_stdout(output), patch.dict(os.environ, {"COLUMNS": str(width), "TERM": "dumb"}), patch("builtins.input", side_effect=["native", "", "trusted"]), patch.object(integrate.environment, "port_state", return_value="free"):
+                result = integrate.collect_topology(api, facts)
+            text = output.getvalue()
+            self.assertEqual(result["endpoint"], "http://127.0.0.1:8080")
+            self.assertTrue(all(len(line) <= width for line in text.splitlines()))
+            for jargon in ("listener", "Endpoint", "Выберите вариант", "сертификат"):
+                self.assertNotIn(jargon, text)
+
+    def test_question_context_and_result_are_separated(self):
+        output = io.StringIO()
+        def answer(prompt):
+            print(prompt + "1")
+            return "1"
+        with contextlib.redirect_stdout(output), patch("builtins.input", side_effect=answer):
+            install.choice("Первый вопрос?", ("keep", "cancel"), "keep")
+            install.ask("Следующий вопрос?", help_text="Пояснение к нему.")
+            install.ui().result("сохранено")
+        self.assertIn("Ввод [1]: 1\n\nСледующий вопрос?\nПояснение к нему.\nВвод: 1\n\nГотово: сохранено", output.getvalue())
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Real SSH-style PTY runs in Linux CI")
     def test_management_real_tty_and_no_color(self):

@@ -139,7 +139,7 @@ class InstallerTests(unittest.TestCase):
                 return 17
             if label.startswith("Количество серверов —"):
                 return 0
-            if label == "Hostname или IPv4" and not default:
+            if label == "Имя хоста или IPv4" and not default:
                 count += 1
                 return f"custom-{count}.example.test"
             return convert(default)

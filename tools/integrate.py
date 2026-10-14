@@ -123,8 +123,8 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
     options = {"topology": topology}
     preserve = False
     if legacy:
-        ui().line("Старая схема подключения заменяется размещением n8n. Текущий listener: " + api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"])
-        preserve = choice("Сохранить текущий listener и проверить endpoint?", ("keep", "change"), "keep") == "keep"
+        ui().line("Старая схема подключения заменяется размещением n8n. Текущий адрес API: " + api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"])
+        preserve = choice("Сохранить текущий адрес API и проверить подключение?", ("keep", "change"), "keep") == "keep"
     if topology == "docker":
         if not facts["docker"]["available"]:
             raise ValueError(facts["docker"]["reason"] + ". Исправьте доступ и повторите обнаружение (rescan), либо выберите другую схему")
@@ -148,9 +148,8 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
         candidates = local_listener_candidates(facts)
         items = [*candidates, None]
         names = [item["interface"] + " — " + item["address"] + ":8080" + (" (Docker bridge)" if item["bridge"] else "") for item in candidates]
-        ui().line("Локальный IP:порт, на котором Stolas будет слушать. Маршрутизацию и firewall настройте самостоятельно.")
         default_index = next((index for index, item in enumerate(candidates) if item["address"] == api["STOLAS_LISTEN"]), 0)
-        selected = select_named("Listener Stolas", items, [*names, "Ввести IPv4:порт вручную"], default=default_index, automatic=False)
+        selected = select_named("Адрес API Stolas", items, [*names, "Ввести IPv4:порт вручную"], default=default_index, automatic=False, help_text="Локальный IPv4 и порт API Stolas.")
         binding = selected["address"] + ":8080" if selected else ask("Локальный IPv4:порт Stolas", api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"], lambda value: ":".join(listener(value)))
         api["STOLAS_LISTEN"], api["STOLAS_PORT"] = listener(binding)
     elif topology == "native" and not preserve:
@@ -159,7 +158,7 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
         propose_port(api, facts, root)
     address = ipaddress.IPv4Address(api["STOLAS_LISTEN"])
     if address.is_unspecified or address.is_global:
-        ui().result("Listener может открыть API внешним клиентам. Проверьте firewall и доверие к сети", "warning")
+        ui().result("Выбранный адрес может открыть API внешним клиентам. Проверьте firewall и доверие к сети", "warning")
         if choice("Явно разрешить выбранное прослушивание?", ("allow_bind", "cancel"), "cancel") != "allow_bind":
             raise Cancel()
         api["STOLAS_BIND_CONFIRMED"] = "1"
@@ -168,9 +167,6 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
     validate_listener(api, facts, root)
     direct = "" if address.is_unspecified else f"http://{api['STOLAS_LISTEN']}:{api['STOLAS_PORT']}"
     default_endpoint = previous.get("endpoint", direct) if preserve or previous.get("endpoint_override") else direct
-    ui().line("Endpoint — URL Stolas, который использует n8n; он задаётся отдельно от listener.")
-    ui().line("Встроенный API Stolas работает по HTTP. HTTPS требует настроенного вами reverse proxy с сертификатом.")
-    ui().line("Выпуск, продление сертификата и доверие к внутреннему CA настраивает администратор.")
     options["endpoint"] = ask("Адрес Stolas для n8n", default_endpoint, connection_url)
     options["endpoint_override"] = options["endpoint"] != direct
     if confirm_http(options["endpoint"], "Stolas"):
@@ -398,8 +394,7 @@ def integrate(root, mode=None):
                     options["url"] = ask("Адрес n8n", previous.get("url", ""), connection_url)
                     if confirm_http(options["url"], "n8n"):
                         options["n8n_http_trusted"] = True
-                    ui().line("Ключ будет виден при вставке. Он используется только сейчас и не сохраняется.")
-                    options["key"] = ask("API key, созданный вами в n8n", "", matching(r"[^\s]+"))
+                    options["key"] = ask("Ключ API n8n", "", matching(r"[^\s]+"), help_text="Ввод виден в терминале. Ключ не сохраняется.")
                 ui().stage("Проверьте подключение")
                 ui().line("Адрес Stolas: " + options["endpoint"])
                 if api != original:

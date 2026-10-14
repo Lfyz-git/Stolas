@@ -79,12 +79,12 @@ class IntegrationTests(unittest.TestCase):
 
     def test_single_unknown_header_requires_explicit_selection(self):
         self.assertTrue(self.connect(("1", "connect")))
-        self.assertIn("Credential доступа к Stolas — номер варианта", self.output.getvalue())
+        self.assertIn("Credential доступа к Stolas", self.output.getvalue())
 
     def test_owned_header_id_can_be_reused_without_selection(self):
         (self.root / "n8n/install-state.json").write_text(json.dumps({"url": self.options["url"], "credentials": [{"id": "api", "type": "httpHeaderAuth"}]}))
         self.assertTrue(self.connect(("connect",)))
-        self.assertNotIn("Credential доступа к Stolas — номер варианта", self.output.getvalue())
+        self.assertNotIn("Credential доступа к Stolas", self.output.getvalue())
 
     def test_missing_credentials_exports_and_does_not_post(self):
         self.items = []
