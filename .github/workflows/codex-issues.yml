@@ -12,6 +12,7 @@ jobs:
   authorize:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+
     permissions:
       contents: read
 
@@ -25,6 +26,7 @@ jobs:
         with:
           script: |
             const author = context.payload.issue.user.login;
+
             const response =
               await github.rest.repos.getCollaboratorPermissionLevel({
                 owner: context.repo.owner,
@@ -37,6 +39,7 @@ jobs:
               ['write', 'maintain', 'admin'].includes(permission);
 
             core.setOutput('allowed', String(allowed));
+
             core.info(
               `Issue #${context.issue.number}: ` +
               `${author}, permission=${permission}, allowed=${allowed}`
@@ -175,3 +178,67 @@ jobs:
             --head "$BRANCH" \
             --title "Codex: issue #${ISSUE_NUMBER}" \
             --body "Automated implementation of #${ISSUE_NUMBER}. Review and test before merging."
+
+  report:
+    needs: [authorize, develop]
+    if: >-
+      ${{
+        always() &&
+        needs.authorize.result == 'success' &&
+        needs.authorize.outputs.allowed == 'true'
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    permissions:
+      issues: write
+      pull-requests: read
+
+    steps:
+      - name: Report result to Issue
+        uses: actions/github-script@v8
+        env:
+          DEVELOP_RESULT: ${{ needs.develop.result }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.issue.number;
+            const result = process.env.DEVELOP_RESULT;
+
+            const runUrl =
+              `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+
+            let body;
+
+            if (result === 'success') {
+              const branch =
+                `codex/issue-${issue_number}-${context.runId}`;
+
+              const prs = await github.rest.pulls.list({
+                owner,
+                repo,
+                state: 'all',
+                head: `${owner}:${branch}`
+              });
+
+              const pr = prs.data[0];
+
+              body = pr
+                ? `✅ Codex выполнил задание.\n\n` +
+                  `Pull Request: ${pr.html_url}`
+                : `⚠️ Codex завершил работу, но PR не найден.\n\n` +
+                  `Журнал: ${runUrl}`;
+            } else {
+              body =
+                `❌ Автоматическая обработка завершилась ` +
+                `со статусом: ${result}.\n\n` +
+                `Журнал: ${runUrl}`;
+            }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body
+            });
