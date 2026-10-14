@@ -14,7 +14,7 @@ import subprocess
 import urllib.parse
 from tools.install import (ask, choice, select_named, propose_port, matching,
     integer, timezone, read_api, clean_env, write_private, request_json,
-    docker_command, run, Back, Cancel, Rescan, ServiceRequestError)
+    docker_command, run, Cancel, ServiceRequestError)
 from tools import environment, layout
 from tools.terminal import ui
 from tools.deploy import install_lock
@@ -107,7 +107,7 @@ def validate_listener(api, facts, root):
         if all(saved[key] == api[key] for key in ("STOLAS_LISTEN", "STOLAS_PORT")) and facts.get("stolas"):
             return  # The authenticated local health check still runs before apply.
     if state == "not_local":
-        raise BindingError("Адрес прослушивания отсутствует на этом хосте; выберите локальный IPv4 или выполните rescan")
+        raise BindingError("Адрес прослушивания отсутствует на этом хосте; выберите локальный IPv4 или повторите запуск мастера")
     if state == "busy":
         raise BindingError("Порт прослушивания занят; выберите другой IP:порт. Endpoint n8n пока не проверялся")
     raise BindingError("ОС запрещает привязку API; проверьте права и выберите доступный локальный IP:порт")
@@ -127,9 +127,9 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
         preserve = choice("Сохранить текущий listener и проверить endpoint?", ("keep", "change"), "keep") == "keep"
     if topology == "docker":
         if not facts["docker"]["available"]:
-            raise ValueError(facts["docker"]["reason"] + ". Исправьте доступ и повторите обнаружение (rescan), либо выберите другую схему")
+            raise ValueError(facts["docker"]["reason"] + ". Исправьте доступ и повторите запуск мастера, либо выберите другую схему")
         if not facts["n8n"]:
-            raise ValueError("Запущенный n8n не обнаружен по образу/Compose метаданным. Запустите его и выберите rescan, либо выберите удалённое подключение")
+            raise ValueError("Запущенный n8n не обнаружен по образу/Compose метаданным. Запустите его и повторите запуск мастера, либо выберите удалённое подключение")
         saved = next((c for c in facts["n8n"] if c["name"] == previous.get("docker_container")), None)
         container = saved or select_named("Экземпляр n8n", facts["n8n"],
             [f"{c['name']} — {c['image']}, проект {c.get('project') or 'без Compose'}" for c in facts["n8n"]],
@@ -224,10 +224,10 @@ def validate_discovered_endpoint(plan, facts, root=ROOT):
     if options.get("topology") != "docker":
         return
     if not facts["docker"]["available"]:
-        raise ValueError(facts["docker"]["reason"] + "; повторите rescan")
+        raise ValueError(facts["docker"]["reason"] + "; повторите запуск мастера")
     selected = next((c for c in facts["n8n"] if c["name"] == options.get("docker_container")), None)
     if selected is None:
-        raise ValueError("Сохранённый контейнер n8n больше не обнаружен; выберите раздел n8n или rescan")
+        raise ValueError("Сохранённый контейнер n8n больше не обнаружен; повторите запуск мастера")
     choices, reasons = environment.host_candidates(selected, facts)
     host = plan["api"]["STOLAS_LISTEN"]
     if not any(c["address"] == host for c in choices):
@@ -381,71 +381,66 @@ def integrate(root, mode=None):
     from tools import timezones
     timezones.require(facts)
     with install_lock(root):
-        while True:
-            try:
-                ui().stage("Подключение n8n")
-                selected_mode = mode or choice("Как подключить n8n?", ("export", "api"), "export")
-                api = dict(original)
-                options = {"mode": selected_mode, **collect_topology(api, facts, root, previous)}
-                options["chat_id"] = ask("Telegram chat ID", previous.get("chat_id", ""), matching(r"-?\d+|@[a-zA-Z0-9_]{5,}"))
-                options["notification_mode"] = choice("Какие сообщения отправлять?", ("alerts_only", "every_measurement", "daily_summary"), previous.get("notification_mode", "alerts_only"))
-                options["hours"] = ask("Интервал измерений, часов", previous.get("hours", 3), integer(1, 23))
-                from tools import timezones
-                options["timezone"] = timezones.require(facts)
-                ui().line("Часовой пояс ОС: " + options["timezone"] + " (" + (facts.get("timezone_source") or "ОС") + ")")
-                options["summary_hour"] = ask("Час сводки", previous.get("summary_hour", 9), integer(0, 23)) if options["notification_mode"] == "daily_summary" else 9
-                if selected_mode == "api":
-                    options["url"] = ask("Адрес n8n", previous.get("url", ""), connection_url)
-                    if confirm_http(options["url"], "n8n"):
-                        options["n8n_http_trusted"] = True
-                    ui().line("Ключ будет виден при вставке. Он используется только сейчас и не сохраняется.")
-                    options["key"] = ask("API key, созданный вами в n8n", "", matching(r"[^\s]+"))
-                ui().stage("Проверьте подключение")
-                ui().line("Адрес Stolas: " + options["endpoint"])
-                if api != original:
-                    ui().line("Адрес API изменится. Stolas будет перезапущен; сети n8n останутся прежними.")
-                if choice("Применить настройки подключения?", ("apply", "cancel"), "apply") == "cancel":
-                    raise Cancel()
-                validate_discovered_endpoint({"api": api, "n8n": options}, environment.discover(root), root)
-                data = workflow(root, options)
-                write_private(layout.integration_path(root, "local.json"), json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-                if layout.runtime(root):
-                    from tools import resources
-                    compose = resources.compose(root, resources.command(root))
-                else:
-                    compose = docker_command(root)
-                env_path = root / ".env"
-                with env_path.open(encoding="utf-8", newline="") as file:
-                    old_env = file.read()
-                if api != original:
-                    lines = [line for line in old_env.splitlines() if line.partition("=")[0] not in api]
-                    write_private(env_path, "\n".join(lines) + "\n" + "".join(k + "=" + v + "\n" for k, v in api.items()))
-                    try:
-                        run(compose + ["up", "-d", "--force-recreate", "--wait", "--wait-timeout", "90", "stolas"], root)
-                        check_connection(root, options, api, compose)
-                    except BaseException:
-                        write_private(env_path, old_env)
-                        run(compose + ["up", "-d", "--force-recreate", "--wait", "stolas"], root)
-                        raise
-                else:
+        try:
+            ui().stage("Подключение n8n")
+            selected_mode = mode or choice("Как подключить n8n?", ("export", "api"), "export")
+            api = dict(original)
+            options = {"mode": selected_mode, **collect_topology(api, facts, root, previous)}
+            options["chat_id"] = ask("Telegram chat ID", previous.get("chat_id", ""), matching(r"-?\d+|@[a-zA-Z0-9_]{5,}"))
+            options["notification_mode"] = choice("Какие сообщения отправлять?", ("alerts_only", "every_measurement", "daily_summary"), previous.get("notification_mode", "alerts_only"))
+            options["hours"] = ask("Интервал измерений, часов", previous.get("hours", 3), integer(1, 23))
+            from tools import timezones
+            options["timezone"] = timezones.require(facts)
+            ui().line("Часовой пояс ОС: " + options["timezone"] + " (" + (facts.get("timezone_source") or "ОС") + ")")
+            options["summary_hour"] = ask("Час сводки", previous.get("summary_hour", 9), integer(0, 23)) if options["notification_mode"] == "daily_summary" else 9
+            if selected_mode == "api":
+                options["url"] = ask("Адрес n8n", previous.get("url", ""), connection_url)
+                if confirm_http(options["url"], "n8n"):
+                    options["n8n_http_trusted"] = True
+                ui().line("Ключ будет виден при вставке. Он используется только сейчас и не сохраняется.")
+                options["key"] = ask("API key, созданный вами в n8n", "", matching(r"[^\s]+"))
+            ui().stage("Проверьте подключение")
+            ui().line("Адрес Stolas: " + options["endpoint"])
+            if api != original:
+                ui().line("Адрес API изменится. Stolas будет перезапущен; сети n8n останутся прежними.")
+            if choice("Применить настройки подключения?", ("apply", "cancel"), "apply") == "cancel":
+                raise Cancel()
+            validate_discovered_endpoint({"api": api, "n8n": options}, environment.discover(root), root)
+            data = workflow(root, options)
+            write_private(layout.integration_path(root, "local.json"), json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            if layout.runtime(root):
+                from tools import resources
+                compose = resources.compose(root, resources.command(root))
+            else:
+                compose = docker_command(root)
+            env_path = root / ".env"
+            with env_path.open(encoding="utf-8", newline="") as file:
+                old_env = file.read()
+            if api != original:
+                lines = [line for line in old_env.splitlines() if line.partition("=")[0] not in api]
+                write_private(env_path, "\n".join(lines) + "\n" + "".join(k + "=" + v + "\n" for k, v in api.items()))
+                try:
+                    run(compose + ["up", "-d", "--force-recreate", "--wait", "--wait-timeout", "90", "stolas"], root)
                     check_connection(root, options, api, compose)
-                safe = {k: v for k, v in options.items() if k not in ("key", "bot_token")}
-                write_private(settings, json.dumps(safe, ensure_ascii=False, indent=2) + "\n")
-                connected = connect_n8n(root, options, api, data)
-                ui().line("Импорт: " + str(layout.integration_path(root, "local.json")))
-                ui().line("Выберите Header Auth и Telegram credential в n8n.")
-                ui().line("Выполните Manual test; затем включите расписание.")
-                return 0 if connected else 2
-            except Back:
-                continue
-            except Rescan:
-                facts = environment.discover(root)
-            except (ValueError, RuntimeError) as error:
-                ui().result("Подключение не завершено. Core продолжает работать.", "warning")
-                if isinstance(error, (BindingError, IntegrationConnectionError, ServiceRequestError)):
-                    ui().line(str(error))
-                ui().line("Импортируйте файл вручную: " + str(layout.integration_path(root, "local.json")))
-                return 2
+                except BaseException:
+                    write_private(env_path, old_env)
+                    run(compose + ["up", "-d", "--force-recreate", "--wait", "stolas"], root)
+                    raise
+            else:
+                check_connection(root, options, api, compose)
+            safe = {k: v for k, v in options.items() if k not in ("key", "bot_token")}
+            write_private(settings, json.dumps(safe, ensure_ascii=False, indent=2) + "\n")
+            connected = connect_n8n(root, options, api, data)
+            ui().line("Импорт: " + str(layout.integration_path(root, "local.json")))
+            ui().line("Выберите Header Auth и Telegram credential в n8n.")
+            ui().line("Выполните Manual test; затем включите расписание.")
+            return 0 if connected else 2
+        except (ValueError, RuntimeError) as error:
+            ui().result("Подключение не завершено. Core продолжает работать.", "warning")
+            if isinstance(error, (BindingError, IntegrationConnectionError, ServiceRequestError)):
+                ui().line(str(error))
+            ui().line("Импортируйте файл вручную: " + str(layout.integration_path(root, "local.json")))
+            return 2
 
 
 def main():

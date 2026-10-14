@@ -32,15 +32,7 @@ from tools import environment, layout  # noqa: E402
 from tools.terminal import ui  # noqa: E402
 
 
-class Back(Exception):
-    pass
-
-
 class Cancel(Exception):
-    pass
-
-
-class Rescan(Exception):
     pass
 
 
@@ -48,7 +40,6 @@ LABELS = {
     "required": "Да, проверять (рекомендуется)", "off": "Нет, пропускать проверку",
     "apply": "Установить / применить", "cancel": "Отменить", "wan": "Проверка интернет-канала",
     "measurements": "Параметры измерений и серверы", "api": "Доступ к API",
-    "rescan": "Повторить обнаружение", "resume": "Продолжить", "saved": "Начать заново с сохранённых настроек",
     "sequential": "По очереди", "random": "В случайном порядке",
     "export": "Подготовить файл для импорта", "connect": "Подключить", "create": "Создать credential Stolas API", "later": "Отложить", "keep": "Сохранить",
     "docker": "n8n в Docker на хосте Stolas", "native": "n8n без Docker на хосте Stolas",
@@ -73,13 +64,6 @@ def ask(label, default="", convert=str, secret=False):
             suffix = " [Enter]"
         prompt = terminal.style("Ввод" + suffix + ": ", "prompt")
         raw = (getpass.getpass if secret else input)(prompt)
-        navigation = raw.strip().lower()
-        if navigation in (":back", "назад"):
-            raise Back()
-        if navigation in (":cancel", "отмена"):
-            raise Cancel()
-        if navigation in (":rescan", "обновить"):
-            raise Rescan()
         try:
             return convert(raw.strip() if raw.strip() else default)
         except (ValueError, TypeError, ZoneInfoNotFoundError) as error:
@@ -347,7 +331,7 @@ def propose_port(api, facts, root):
             api["STOLAS_PORT"] = str(port)
             return
         if state == "not_local":
-            raise ValueError(f"Адрес {address} отсутствует на Linux-хосте. Повторите обнаружение или выберите другую схему подключения")
+            raise ValueError(f"Адрес {address} отсутствует на Linux-хосте. Повторите запуск мастера или выберите другую схему подключения")
         if state == "denied":
             raise ValueError(f"ОС не разрешает привязку к {address}:{port}; выберите непривилегированный порт в разделе api")
     raise ValueError(f"Нет свободного порта в диапазоне {initial}–{min(65535, initial + 99)}; измените порт в разделе api")
@@ -460,23 +444,7 @@ def collect_plan(root, existing, facts, reuse=False):
     if not configured:
         plan["config"]["node"] = re.sub(r"[^\w.-]", "-", facts["hostname"])[:64] or "stolas-node"
     ui().line()
-    ui().line("Enter — принять. :back — назад; :cancel — отмена.")
-    ui().line(":rescan — обновить. Ctrl+C — сохранить и выйти.")
-    if draft.exists() and not reuse:
-        if draft.is_symlink():
-            raise ValueError("Черновик является symlink; чтение остановлено")
-        saved = json.loads(draft.read_text(encoding="utf-8"))
-        # Legacy integration secrets never enter the new Core plan or backups.
-        saved = {k: saved[k] for k in ("config", "api", "completed") if k in saved}
-        saved["completed"] = [x for x in saved.get("completed", []) if x in ("wan", "api", "measurements")]
-        saved["version"] = 2
-        validate_plan(saved)
-        save_draft(root, saved)
-        ui().result("найдена незавершённая настройка")
-        if choice("Продолжить настройку?", ("resume", "saved"), "resume") == "resume":
-            plan = saved
-        else:
-            draft.unlink()
+    ui().line("Enter — принять предложенное значение.")
     stages = [] if reuse or configured else [s for s in ("wan",) if s not in plan["completed"]]
     position = 0
     if not reuse:
@@ -489,9 +457,11 @@ def collect_plan(root, existing, facts, reuse=False):
         try:
             if section is None:
                 print_plan(plan, facts, reuse)
-                values = ("apply", "cancel") if reuse else ("apply", "wan", "measurements", "api", "rescan", "cancel")
+                values = ("apply", "cancel") if reuse else ("apply", "wan", "measurements", "api", "cancel")
                 section = choice("Что сделать?", values, "apply")
                 if section == "cancel":
+                    if draft.exists() and not draft.is_symlink():
+                        draft.unlink()
                     raise Cancel()
                 if section == "apply":
                     if plan["config"]["route"]["mode"] == "required" and not plan["config"]["route"]["expected_public_cidrs"]:
@@ -505,11 +475,6 @@ def collect_plan(root, existing, facts, reuse=False):
                         continue
                     save_draft(root, plan)
                     return plan
-            if section == "rescan":
-                facts.clear()
-                facts.update(environment.discover(root))
-                print_facts(facts)
-                continue
             candidate = copy.deepcopy(plan)
             if section == "wan":
                 ui().stage("Проверка интернет-канала", 2)
@@ -536,7 +501,7 @@ def collect_plan(root, existing, facts, reuse=False):
                     ui().line("Выберите адрес доверенной сети. Firewall остаётся под вашим управлением.")
                     addresses = [a for a in facts["addresses"] if not ipaddress.IPv4Address(a["address"]).is_global and not ipaddress.IPv4Address(a["address"]).is_loopback]
                     if not addresses:
-                        raise ValueError("Адреса локальной сети не найдены. Настройте интерфейс и обновите обнаружение")
+                        raise ValueError("Адреса локальной сети не найдены. Настройте интерфейс и повторите запуск мастера")
                     selected = select_named("Адрес хоста", addresses, [a["interface"] + " — " + a["address"] for a in addresses], automatic=False)
                     candidate["api"]["STOLAS_LISTEN"] = selected["address"]
                 candidate["api"]["STOLAS_PORT"] = str(ask("Порт API", candidate["api"]["STOLAS_PORT"], integer(1024, 65535)))
@@ -545,22 +510,8 @@ def collect_plan(root, existing, facts, reuse=False):
             plan = candidate
             if section not in plan["completed"]:
                 plan["completed"].append(section)
-            save_draft(root, plan)
             if position < len(stages):
                 position += 1
-        except Back:
-            if section is None:
-                position = max(0, len(stages) - 1)
-            elif position < len(stages):
-                position = max(0, position - 1)
-        except Rescan:
-            facts.clear()
-            facts.update(environment.discover(root))
-            print_facts(facts)
-        except Cancel:
-            if draft.exists() and not draft.is_symlink():
-                draft.unlink()
-            raise
         except (ValueError, RuntimeError) as error:
             ui().result(str(error), "error")
 

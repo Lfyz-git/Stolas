@@ -40,6 +40,14 @@ class EntrypointTests(unittest.TestCase):
         with patch.object(entrypoints.shutil, "which", return_value=None):
             return entrypoints.install(root or self.root, self.binary, name)
 
+    def test_offer_propagates_process_interrupt(self):
+        with patch.object(entrypoints, "read", return_value={}), patch.object(entrypoints, "configure", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            entrypoints.offer(self.root)
+
+    def test_conflicting_command_can_be_cancelled_by_number(self):
+        with patch.object(entrypoints, "read", return_value={}), patch.object(entrypoints, "install", side_effect=FileExistsError), patch("builtins.input", return_value="2"):
+            entrypoints.configure(self.root, scope="user")
+
     def test_owned_wrapper_idempotent_no_secrets_and_safe_repeated_removal(self):
         record = self.install()
         path = Path(record["path"])
@@ -219,8 +227,8 @@ elif args[:2] == ['volume','inspect']: sys.exit(1)
         env = {**os.environ, "PATH": str(self.binary) + os.pathsep + os.environ["PATH"], "TEST_DOCKER_LOG": str(log)}
         commands = [(["help"], "", 0), (["diagnose", "--json"], "", 0), (["history"], "", 0),
                     (["run", "--json"], "", 0), (["run"], "", 0), (["logs"], "", 7),
-                    (["configure"], ":cancel\n", 3), (["update", "--version", "invalid"], "", 1),
-                    (["rollback"], "", 0), (["integrate", "n8n", "--mode", "export"], ":cancel\n", 3),
+                    (["configure"], "5\n", 3), (["update", "--version", "invalid"], "", 1),
+                    (["rollback"], "", 0), (["integrate", "n8n", "--mode", "export"], ":cancel\n", 130),
                     (["uninstall"], "cancel\n", 0)]
         for args, answer, expected in commands:
             with self.subTest(command=args):

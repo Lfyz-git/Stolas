@@ -218,26 +218,43 @@ class DiscoveryTests(unittest.TestCase):
         self.assertFalse((self.root / "config/local.json").exists())
         self.assertNotIn(plan["api"]["STOLAS_API_TOKEN"], self.output.getvalue())
 
-    def test_cancel_and_back_keep_live_configuration_untouched(self):
+    def test_numbered_cancel_keeps_live_configuration_untouched(self):
         facts = self.discover()
-        answers = ["", "192.0.2.1/32", ":back", "off", "api", ":back", "cancel"]
+        answers = ["", "192.0.2.1/32", "5"]
         with patch("builtins.input", side_effect=answers), patch.object(env, "port_state", return_value="free"), self.assertRaises(install.Cancel):
             install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
         self.assertFalse((self.root / ".env").exists())
         self.assertFalse((self.root / ".stolas-draft.json").exists())
 
-    def test_interrupt_and_resume_preserve_token_and_finished_wan_step(self):
+    def test_interrupt_discards_unconfirmed_steps(self):
         facts = self.discover()
         with patch("builtins.input", side_effect=["", "192.0.2.1/32", KeyboardInterrupt]), self.assertRaises(KeyboardInterrupt):
             install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
-        draft = json.loads((self.root / ".stolas-draft.json").read_text())
-        self.assertEqual(draft["completed"], ["wan"])
-        if os.name != "nt":
-            self.assertEqual((self.root / ".stolas-draft.json").stat().st_mode & 0o777, 0o600)
-        with patch("builtins.input", side_effect=["resume", "apply"]) as prompt, patch.object(env, "port_state", return_value="free"):
+        self.assertFalse((self.root / ".stolas-draft.json").exists())
+        self.assertFalse((self.root / ".env").exists())
+        self.assertFalse((self.root / "config/local.json").exists())
+        with patch("builtins.input", side_effect=["", "198.51.100.1/32", ""]) as prompt, patch.object(env, "port_state", return_value="free"):
             plan = install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
-        self.assertEqual(plan["api"]["STOLAS_API_TOKEN"], draft["api"]["STOLAS_API_TOKEN"])
-        self.assertEqual(prompt.call_count, 2)
+        self.assertEqual(plan["config"]["route"]["expected_public_cidrs"], ["198.51.100.1/32"])
+        self.assertEqual(prompt.call_count, 3)
+
+    def test_interrupt_edit_keeps_saved_configuration_and_recovery_data(self):
+        facts = self.discover()
+        cfg = copy.deepcopy(install.DEFAULT)
+        cfg["route"]["expected_public_cidrs"] = ["192.0.2.1/32"]
+        (self.root / "config").mkdir()
+        (self.root / "config/local.json").write_text(json.dumps(cfg))
+        (self.root / ".env").write_text("STOLAS_LISTEN=127.0.0.1\nSTOLAS_PORT=8080\nSTOLAS_API_TOKEN=" + "a" * 40)
+        recovery = self.root / ".stolas/backups/checkpoint"
+        recovery.parent.mkdir(parents=True)
+        recovery.write_bytes(b"confirmed recovery data")
+        history = self.root / "history.json"
+        history.write_text('[{"status": "ok"}]')
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        with patch("builtins.input", side_effect=["2", "", "198.51.100.1/32", KeyboardInterrupt]), self.assertRaises(KeyboardInterrupt):
+            install.collect_plan(self.root, cfg, facts)
+        self.assertEqual({p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}, before)
+        self.assertEqual(cfg["route"]["expected_public_cidrs"], ["192.0.2.1/32"])
 
     def test_existing_configuration_opens_summary_without_reasking_fields(self):
         facts = self.discover()
@@ -280,13 +297,13 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "прослушивания|listener"):
             integrate.validate_discovered_endpoint(choices, facts)
 
-    def test_legacy_draft_discards_integration_secrets_and_resumes_core(self):
+    def test_legacy_draft_is_ignored_and_replaced_only_after_confirmation(self):
         facts = self.discover()
         cfg = copy.deepcopy(install.DEFAULT)
         cfg["route"]["expected_public_cidrs"] = ["192.0.2.1/32"]
         old = dict(config=cfg, api=dict(STOLAS_LISTEN="127.0.0.1", STOLAS_PORT="8080", STOLAS_API_TOKEN="a"*40), completed=["wan", "n8n"], n8n=dict(mode="api", key="old-key", bot_token="old-bot-secret"))
         (self.root / ".stolas-draft.json").write_text(json.dumps(old))
-        with patch("builtins.input", side_effect=["resume", "apply"]), patch.object(install.getpass, "getpass") as hidden, patch.object(env, "port_state", return_value="free"):
+        with patch("builtins.input", side_effect=["", "192.0.2.1/32", "apply"]), patch.object(install.getpass, "getpass") as hidden, patch.object(env, "port_state", return_value="free"):
             plan = install.collect_plan(self.root, cfg, facts)
         hidden.assert_not_called()
         self.assertNotIn("n8n", plan)

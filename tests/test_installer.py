@@ -38,6 +38,16 @@ class InstallerTests(unittest.TestCase):
         redirect.__enter__()
         self.addCleanup(redirect.__exit__, None, None, None)
 
+    def test_former_commands_use_normal_input_validation(self):
+        for value in (":back", ":cancel", ":rescan", "назад", "отмена", "обновить"):
+            with self.subTest(value=value):
+                with patch("builtins.input", return_value=value):
+                    self.assertEqual(installer.ask("Текст"), value)
+                with patch("builtins.input", side_effect=[value, ""]):
+                    self.assertEqual(installer.ask("Число", 7, installer.integer(1, 10)), 7)
+                with patch("builtins.input", side_effect=[value, "2"]):
+                    self.assertEqual(installer.choice("Действие", ("apply", "cancel"), "apply"), "cancel")
+
     def install(self, options=None, configure_only=False, cli_status="ok", cli_code=0, skip_first_test=False, failed_stage=None):
         self.calls = []
 
