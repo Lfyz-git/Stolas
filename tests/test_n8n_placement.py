@@ -29,11 +29,13 @@ class PlacementTests(unittest.TestCase):
         self.addCleanup(redirect.__exit__, None, None, None)
 
     def collect(self, answers, previous=None, state="free"):
-        with patch("builtins.input", side_effect=answers), patch.object(integrate.environment, "port_state", return_value=state):
-            return integrate.collect_topology(self.api, self.facts, self.root, previous)
+        with patch("builtins.input", side_effect=answers) as prompt, patch.object(integrate.environment, "port_state", return_value=state):
+            options = integrate.collect_topology(self.api, self.facts, self.root, previous)
+        self.assertEqual(prompt.call_count, len(answers))
+        return options
 
     def test_exactly_three_placement_choices_and_native_default(self):
-        options = self.collect(["native", "", "trusted"])
+        options = self.collect(["native"])
         self.assertEqual(options["endpoint"], "http://127.0.0.1:8080")
         text = self.output.getvalue()
         self.assertIn("1. n8n в Docker", text)
@@ -45,13 +47,12 @@ class PlacementTests(unittest.TestCase):
     def test_remote_lan_and_overlay_are_equal_placement_choices(self):
         for selected, address in (("1", "10.8.0.1"), ("2", "192.168.1.10")):
             with self.subTest(address=address):
-                options = self.collect(["remote", selected, "", "trusted"])
+                options = self.collect(["remote", selected])
                 self.assertEqual(options["topology"], "remote")
                 self.assertEqual(self.api["STOLAS_LISTEN"], address)
                 self.assertEqual(options["endpoint"], "http://" + address + ":8080")
-                self.assertTrue(options["http_trusted"])
                 self.assertFalse(options["endpoint_override"])
-        self.assertIn("Authorization: Bearer", self.output.getvalue())
+        self.assertNotIn("Адрес Stolas для n8n", self.output.getvalue())
 
     def test_remote_addresses_are_deterministic_and_bridge_is_last(self):
         expected = integrate.local_listener_candidates(self.facts)
@@ -60,32 +61,47 @@ class PlacementTests(unittest.TestCase):
         self.assertEqual([item["address"] for item in expected], ["10.8.0.1", "192.168.1.10", "127.0.0.1", "172.18.0.1"])
 
     def test_manual_existing_local_address_and_separate_port(self):
-        options = self.collect(["remote", "5", "192.168.1.10:9090", "", "trusted"])
+        options = self.collect(["remote", "5", "192.168.1.10:9090"])
         self.assertEqual(self.api["STOLAS_PORT"], "9090")
         self.assertEqual(self.api["STOLAS_LISTEN"], "192.168.1.10")
         self.assertEqual(options["endpoint"], "http://192.168.1.10:9090")
 
     def test_manual_binding_works_without_iproute_discovery(self):
         self.facts["addresses"] = []
-        options = self.collect(["remote", "1", "192.168.1.10:8080", "", "trusted"])
+        options = self.collect(["remote", "1", "192.168.1.10:8080"])
         self.assertEqual(options["endpoint"], "http://192.168.1.10:8080")
 
     def test_loopback_proxy_override_does_not_change_listener(self):
-        options = self.collect(["remote", "3", "https://stolas.example.test/api"])
+        options = self.collect(["remote", "3"], dict(endpoint="https://stolas.example.test/api"))
         self.assertEqual(self.api["STOLAS_LISTEN"], "127.0.0.1")
         self.assertEqual(options["endpoint"], "https://stolas.example.test/api")
         self.assertTrue(options["endpoint_override"])
 
-    def test_http_hostname_override_requires_explicit_network_trust(self):
-        with self.assertRaises(install.Cancel):
-            self.collect(["native", "http://stolas.example.test:8080", "cancel"])
-        options = self.collect(["native", "http://stolas.example.test:8080", "trusted"])
-        self.assertTrue(options["http_trusted"])
+    def test_saved_http_override_needs_no_transport_confirmation(self):
+        options = self.collect(["native"], dict(endpoint="http://stolas.example.test:8080", endpoint_override=True))
+        self.assertEqual(options["endpoint"], "http://stolas.example.test:8080")
+        self.assertNotIn("HTTP", self.output.getvalue())
+
+    def test_saved_override_survives_listener_change(self):
+        previous = dict(topology="remote", endpoint="https://stolas.example.test/api", endpoint_override=True)
+        options = self.collect(["remote", "2"], previous)
+        self.assertEqual(self.api["STOLAS_LISTEN"], "192.168.1.10")
+        self.assertEqual(options["endpoint"], previous["endpoint"])
+        self.assertTrue(options["endpoint_override"])
+
+    def test_previous_direct_endpoint_tracks_new_listener(self):
+        options = self.collect(["remote", "2"], dict(endpoint="http://127.0.0.1:8080"))
+        self.assertEqual(options["endpoint"], "http://192.168.1.10:8080")
+        self.assertFalse(options["endpoint_override"])
+
+    def test_wildcard_without_saved_endpoint_does_not_invent_address(self):
+        with self.assertRaises(integrate.BindingError):
+            self.collect(["remote", "5", "0.0.0.0:8080", "allow_bind"])
 
     def test_wildcard_requires_separate_confirmation_and_a_client_endpoint(self):
         with self.assertRaises(install.Cancel):
             self.collect(["remote", "5", "0.0.0.0:8080", "cancel"])
-        options = self.collect(["remote", "5", "0.0.0.0:8080", "allow_bind", "https://stolas.example.test"])
+        options = self.collect(["remote", "5", "0.0.0.0:8080", "allow_bind"], dict(endpoint="https://stolas.example.test"))
         self.assertEqual(self.api["STOLAS_BIND_CONFIRMED"], "1")
         self.assertEqual(self.api["STOLAS_LISTEN"], "0.0.0.0")
         self.assertEqual(options["endpoint"], "https://stolas.example.test")
@@ -116,7 +132,7 @@ class PlacementTests(unittest.TestCase):
         for topology in ("lan", "vpn", "proxy"):
             with self.subTest(topology=topology):
                 self.api.update(STOLAS_LISTEN="10.8.0.1", STOLAS_PORT="9090")
-                options = self.collect(["remote", "keep", ""], dict(topology=topology, endpoint="https://stolas.example.test"))
+                options = self.collect(["remote", "keep"], dict(topology=topology, endpoint="https://stolas.example.test"))
                 self.assertEqual(self.api["STOLAS_LISTEN"], "10.8.0.1")
                 self.assertEqual(self.api["STOLAS_PORT"], "9090")
                 self.assertEqual(options["topology"], "remote")
@@ -134,7 +150,7 @@ class PlacementTests(unittest.TestCase):
         self.facts["n8n"] = [dict(name="test-editor", id="test-id", image="n8nio/n8n:2", confidence="image", mode="bridge")]
         candidate = dict(network="test-network", interface="br-test", address="172.18.0.1")
         with patch.object(integrate.environment, "host_candidates", return_value=([candidate], [])):
-            options = self.collect(["docker", "https://stolas.example.test"])
+            options = self.collect(["docker"], dict(endpoint="https://stolas.example.test"))
             with patch.object(integrate.environment, "port_state", return_value="free"):
                 integrate.validate_discovered_endpoint(dict(api=self.api, n8n={**options, "mode": "export"}), self.facts, self.root)
         self.assertEqual(self.api["STOLAS_LISTEN"], "172.18.0.1")

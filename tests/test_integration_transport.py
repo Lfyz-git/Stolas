@@ -1,7 +1,4 @@
 """Synthetic endpoint choices and real local HTTP/TLS transport boundaries."""
-import contextlib
-import io
-import os
 from pathlib import Path
 import socket
 import ssl
@@ -19,22 +16,6 @@ if HAS_TOOLS:
 
 @unittest.skipUnless(HAS_TOOLS, "Integration wizard is not shipped in Core image")
 class TransportTests(unittest.TestCase):
-    def test_both_directions_confirm_all_http_addresses_and_default_to_cancel(self):
-        for service in ("Stolas", "n8n"):
-            for address in ("http://127.0.0.1:8080", "http://[::1]:8080", "http://10.50.0.20:8080",
-                            "http://192.0.2.20:8080", "http://service.example.test/path"):
-                with self.subTest(service=service, address=address), contextlib.redirect_stdout(io.StringIO()) as output:
-                    self.assertEqual(integrate.connection_url(address), address)
-                    with patch("builtins.input", return_value=""), self.assertRaises(install.Cancel):
-                        integrate.confirm_http(address, service)
-                    with patch("builtins.input", return_value="trusted"):
-                        self.assertTrue(integrate.confirm_http(address, service))
-                    self.assertIn("Authorization: Bearer" if service == "Stolas" else "X-N8N-API-KEY", output.getvalue())
-                    self.assertIn("Защиту сетевого пути настраиваете вы", output.getvalue())
-        with patch("builtins.input") as prompt:
-            self.assertFalse(integrate.confirm_http("https://service.example.test", "n8n"))
-        prompt.assert_not_called()
-
     def test_integration_validator_does_not_relax_other_url_policies(self):
         with self.assertRaises(ValueError):
             install.url("http://service.example.test")
@@ -45,12 +26,6 @@ class TransportTests(unittest.TestCase):
                       "http://service.example.test/#fragment", "http://service.example.test/\x00"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 integrate.connection_url(value)
-
-    def test_warning_and_choices_fit_a_narrow_terminal(self):
-        with patch.dict(os.environ, {"COLUMNS": "40", "LINES": "24"}), contextlib.redirect_stdout(io.StringIO()) as output, patch("builtins.input", return_value="trusted"):
-            integrate.confirm_http("http://service.example.test", "n8n")
-        self.assertTrue(all(len(line) <= 40 for line in output.getvalue().splitlines()))
-        self.assertIn("X-N8N-API-KEY", output.getvalue())
 
     def test_fixed_network_diagnostics_do_not_expose_exception_payloads(self):
         for reason, expected in ((socket.gaierror("private-payload"), "DNS"),
