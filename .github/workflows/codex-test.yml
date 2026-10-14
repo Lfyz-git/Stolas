@@ -1,0 +1,27 @@
+
+name: Codex Runner Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: [self-hosted, codex]
+    timeout-minutes: 10
+
+    steps:
+      - name: Check environment
+        run: |
+          whoami
+          git --version
+          gh --version
+          codex --version
+          codex login status
+
+      - name: Test Codex execution
+        run: |
+          codex exec --skip-git-repo-check --sandbox read-only \
+            "Reply with exactly: STOLAS_CODEX_OK"
