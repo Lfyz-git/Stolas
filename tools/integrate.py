@@ -12,9 +12,9 @@ import json
 import hashlib
 import subprocess
 import urllib.parse
-from tools.install import (ask, choice, select_named, propose_port, url, matching,
+from tools.install import (ask, choice, select_named, propose_port, matching,
     integer, timezone, read_api, clean_env, write_private, request_json,
-    docker_command, run, Back, Cancel, Rescan)
+    docker_command, run, Back, Cancel, Rescan, ServiceRequestError)
 from tools import environment, layout
 from tools.terminal import ui
 from tools.deploy import install_lock
@@ -29,11 +29,16 @@ class IntegrationConnectionError(RuntimeError):
 
 def connection_url(value, topology=None):
     """Endpoint syntax is independent of placement; HTTP trust is confirmed by UI."""
-    parsed = urllib.parse.urlsplit(value)
-    if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username
-            or parsed.password or parsed.query or parsed.fragment or any(c.isspace() for c in value)):
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        raise ValueError("Неверный адрес или порт URL") from None
+    if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or parsed.query or parsed.fragment
+            or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value)):
         raise ValueError("Нужен URL http/https без логина, query и fragment")
-    if parsed.port is not None and not 1 <= parsed.port <= 65535:
+    if parsed.netloc.endswith(":") or port is not None and not 1 <= port <= 65535:
         raise ValueError("Порт endpoint должен быть от 1 до 65535")
     try:
         address = ipaddress.ip_address(parsed.hostname)
@@ -42,6 +47,19 @@ def connection_url(value, topology=None):
     if address is not None and (address.is_unspecified or address.is_multicast):
         raise ValueError("Endpoint должен содержать адрес, доступный клиенту")
     return value.rstrip("/")
+
+
+def confirm_http(value, service):
+    """Confirm transport choice without inferring or changing the network route."""
+    if urllib.parse.urlsplit(value).scheme != "http":
+        return False
+    credential = "Authorization: Bearer" if service == "Stolas" else "X-N8N-API-KEY"
+    ui().result("HTTP сам по себе не шифрует соединение и ключ доступа.", "warning")
+    ui().line(service + ": ключ передаётся в заголовке " + credential + ".")
+    ui().line("Защиту сетевого пути настраиваете вы.")
+    if choice("Продолжить с указанным HTTP-адресом?", ("trusted", "cancel"), "cancel") != "trusted":
+        raise Cancel()
+    return True
 
 
 def listener(value):
@@ -150,14 +168,12 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
     validate_listener(api, facts, root)
     direct = "" if address.is_unspecified else f"http://{api['STOLAS_LISTEN']}:{api['STOLAS_PORT']}"
     default_endpoint = previous.get("endpoint", direct) if preserve or previous.get("endpoint_override") else direct
-    ui().line("Endpoint — URL, который использует n8n. Для reverse proxy можно указать HTTPS независимо от listener.")
+    ui().line("Endpoint — URL Stolas, который использует n8n; он задаётся отдельно от listener.")
+    ui().line("Встроенный API Stolas работает по HTTP. HTTPS требует настроенного вами reverse proxy с сертификатом.")
+    ui().line("Выпуск, продление сертификата и доверие к внутреннему CA настраивает администратор.")
     options["endpoint"] = ask("Адрес Stolas для n8n", default_endpoint, connection_url)
     options["endpoint_override"] = options["endpoint"] != direct
-    parsed = urllib.parse.urlsplit(options["endpoint"])
-    if parsed.scheme == "http" and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
-        ui().result("HTTP передаёт заголовок Authorization без TLS. Используйте только доверенную сеть; иначе выберите HTTPS", "warning")
-        if choice("Подтверждаете доверие к сети этого endpoint?", ("trusted", "cancel"), "cancel") != "trusted":
-            raise Cancel()
+    if confirm_http(options["endpoint"], "Stolas"):
         options["http_trusted"] = True
     return options
 
@@ -243,6 +259,8 @@ def check_connection(root, options, api, compose):
         try:
             if request_json(f"http://{host}:{api['STOLAS_PORT']}", "/healthz", api["STOLAS_API_TOKEN"]).get("status") != "ready":
                 raise RuntimeError("not_ready")
+        except ServiceRequestError as error:
+            raise IntegrationConnectionError("Локальный listener Stolas: " + str(error)) from None
         except (RuntimeError, ValueError, OSError):
             raise IntegrationConnectionError("Локальный listener Stolas не отвечает с авторизацией. Проверьте привязку IP:порта и состояние Core; endpoint n8n пока не проверен") from None
     container = options.get("docker_id") or options.get("docker_container")
@@ -263,6 +281,8 @@ def check_connection(root, options, api, compose):
     else:
         try:
             request_json(options["endpoint"], "/healthz", api["STOLAS_API_TOKEN"])
+        except ServiceRequestError as error:
+            raise IntegrationConnectionError("Endpoint Stolas для n8n: " + str(error)) from None
         except (RuntimeError, ValueError, OSError):
             raise IntegrationConnectionError("Endpoint n8n недоступен с этого хоста. Локальный listener проверен; проверьте URL, DNS и связность. Доступ с другого хоста подтверждается Manual test в n8n") from None
         ui().result("API доступен с этой машины")
@@ -297,6 +317,10 @@ def connect_n8n(root, options, api, data):
         return False
     try:
         items = list_credentials(options)
+    except ServiceRequestError as error:
+        ui().result(str(error), "warning")
+        ui().line("Файл подготовлен для ручного импорта.")
+        return False
     except (RuntimeError, ValueError):
         ui().result("n8n не разрешил чтение списка credentials. Файл подготовлен для ручного импорта.", "warning")
         return False
@@ -371,7 +395,9 @@ def integrate(root, mode=None):
                 ui().line("Часовой пояс ОС: " + options["timezone"] + " (" + (facts.get("timezone_source") or "ОС") + ")")
                 options["summary_hour"] = ask("Час сводки", previous.get("summary_hour", 9), integer(0, 23)) if options["notification_mode"] == "daily_summary" else 9
                 if selected_mode == "api":
-                    options["url"] = ask("Адрес n8n", previous.get("url", ""), url)
+                    options["url"] = ask("Адрес n8n", previous.get("url", ""), connection_url)
+                    if confirm_http(options["url"], "n8n"):
+                        options["n8n_http_trusted"] = True
                     ui().line("Ключ будет виден при вставке. Он используется только сейчас и не сохраняется.")
                     options["key"] = ask("API key, созданный вами в n8n", "", matching(r"[^\s]+"))
                 ui().stage("Проверьте подключение")
@@ -416,7 +442,7 @@ def integrate(root, mode=None):
                 facts = environment.discover(root)
             except (ValueError, RuntimeError) as error:
                 ui().result("Подключение не завершено. Core продолжает работать.", "warning")
-                if isinstance(error, (BindingError, IntegrationConnectionError)):
+                if isinstance(error, (BindingError, IntegrationConnectionError, ServiceRequestError)):
                     ui().line(str(error))
                 ui().line("Импортируйте файл вручную: " + str(layout.integration_path(root, "local.json")))
                 return 2

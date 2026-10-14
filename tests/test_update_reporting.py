@@ -112,15 +112,15 @@ class UpdateReportingTests(unittest.TestCase):
 
     def update(self, code=0):
         with patch.object(deploy, "run_installer", return_value=code):
-            return deploy.deploy(ROOT, self.root, ref="v0.6.4", action="update")
+            return deploy.deploy(ROOT, self.root, ref="v0.6.5", action="update")
 
     def test_success_is_confirmed_before_separate_restore_point_report(self):
         self.assertEqual(self.update(), 0)
         text = self.output.getvalue()
-        self.assertIn("Stolas успешно обновлён до v0.6.4", text)
+        self.assertIn("Stolas успешно обновлён до v0.6.5", text)
         self.assertLess(text.index("успешно обновлён"), text.index("Точки восстановления"))
         self.assertEqual(deploy.read_json(self.root / ".stolas/state/transaction.json")["phase"], "complete")
-        self.assertEqual(layout.installed_version(self.root), "v0.6.4")
+        self.assertEqual(layout.installed_version(self.root), "v0.6.5")
 
     def test_cleanup_failure_does_not_change_update_success_or_advise_repetition(self):
         for _ in range(3):
@@ -131,7 +131,7 @@ class UpdateReportingTests(unittest.TestCase):
             deploy.shutil.rmtree.avoids_symlink_attacks = True
             self.assertEqual(self.update(), 0)
         text = " ".join(self.output.getvalue().split())
-        self.assertIn("Stolas успешно обновлён до v0.6.4", text)
+        self.assertIn("Stolas успешно обновлён до v0.6.5", text)
         self.assertIn("не удалось удалить", text)
         self.assertNotRegex(text, r"повтор.*обнов|private-path|Обновление не выполнено")
 
@@ -141,7 +141,7 @@ class UpdateReportingTests(unittest.TestCase):
             (self.root / "config/local.json").write_text("changed")
             return 1
         with patch.object(deploy, "run_installer", side_effect=fail):
-            self.assertEqual(deploy.deploy(ROOT, self.root, ref="v0.6.4", action="update"), 1)
+            self.assertEqual(deploy.deploy(ROOT, self.root, ref="v0.6.5", action="update"), 1)
         text = self.output.getvalue()
         self.assertIn("API недоступен", text)
         self.assertIn("Обновление не выполнено", text)
@@ -162,7 +162,7 @@ class UpdateReportingTests(unittest.TestCase):
     def test_finalize_error_preserves_real_reason_and_does_not_claim_success(self):
         with patch.object(deploy, "run_installer", return_value=0), patch.object(deploy, "finalize", side_effect=RuntimeError("finalization failed")):
             with self.assertRaisesRegex(RuntimeError, "finalization failed"):
-                deploy.deploy(ROOT, self.root, ref="v0.6.4", action="update")
+                deploy.deploy(ROOT, self.root, ref="v0.6.5", action="update")
         self.assertNotIn("успешно обновлён", self.output.getvalue())
         self.assertIn("Обновление не выполнено", self.output.getvalue())
 

@@ -5,7 +5,7 @@ import json
 import re
 from pathlib import Path
 
-VERSION = "0.6.4"
+VERSION = "0.6.5"
 
 
 def installed_version(root):

@@ -211,7 +211,7 @@ class IntegrationTests(unittest.TestCase):
         facts["timezone"] = "Europe/Moscow"
         (self.root / "n8n/settings.json").write_text(json.dumps({"timezone": "Europe/Berlin"}))
         original = (self.root / ".env").read_bytes()
-        with patch.dict(os.environ, {"TZ": "Etc/UTC"}), patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "request_json", return_value={"status": "ready"}), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "", "123", "", "", "apply"]) as prompt, patch("getpass.getpass") as secret:
+        with patch.dict(os.environ, {"TZ": "Etc/UTC"}), patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "request_json", return_value={"status": "ready"}), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "", "trusted", "123", "", "", "apply"]) as prompt, patch("getpass.getpass") as secret:
             self.assertEqual(integrate.integrate(self.root, "export"), 0)
         secret.assert_not_called(); run.assert_not_called()
         self.assertEqual((self.root / ".env").read_bytes(), original)
@@ -221,6 +221,54 @@ class IntegrationTests(unittest.TestCase):
         for node in exported["nodes"]:
             if node["name"] in ("Settings", "Summary settings"):
                 self.assertIn('"timezone": "Europe/Moscow"', node["parameters"]["jsCode"])
+
+    def test_http_n8n_cancel_happens_before_key_requests_and_configuration_changes(self):
+        facts = self.installed_core()
+        original = (self.root / ".env").read_bytes()
+        answers = ["native", "", "trusted", "123", "", "", "http://192.0.2.20:5678", ""]
+        with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "request_json") as request, patch.object(integrate, "run") as run, patch("builtins.input", side_effect=answers):
+            with self.assertRaises(integrate.Cancel):
+                integrate.integrate(self.root, "api")
+        request.assert_not_called()
+        run.assert_not_called()
+        self.assertEqual((self.root / ".env").read_bytes(), original)
+        self.assertFalse((self.root / "n8n/settings.json").exists())
+        self.assertFalse((self.root / "n8n/local.json").exists())
+        self.assertNotIn("API key, созданный", self.output.getvalue())
+
+    def test_stolas_http_cancel_happens_before_key_requests_and_configuration_changes(self):
+        facts = self.installed_core()
+        original = (self.root / ".env").read_bytes()
+        with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "request_json") as request, patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "http://stolas.example.test:8080", "cancel"]):
+            with self.assertRaises(integrate.Cancel):
+                integrate.integrate(self.root, "api")
+        request.assert_not_called()
+        run.assert_not_called()
+        self.assertEqual((self.root / ".env").read_bytes(), original)
+        self.assertFalse((self.root / "n8n/local.json").exists())
+        self.assertNotIn("API key, созданный", self.output.getvalue())
+
+    def test_safe_connection_diagnostic_is_shown_instead_of_credential_permission_claim(self):
+        with patch.object(integrate, "request_json", side_effect=integrate.ServiceRequestError("Сертификат HTTPS не прошёл проверку.")):
+            self.assertFalse(integrate.connect_n8n(self.root, self.options, self.api, self.data))
+        self.assertIn("Сертификат HTTPS не прошёл проверку", self.output.getvalue())
+        self.assertNotIn("не разрешил чтение", self.output.getvalue())
+
+    def test_wizard_preserves_user_http_n8n_address_after_confirmation(self):
+        facts = self.installed_core()
+        for address in ("http://192.168.50.20:5678/api", "http://n8n.example.test:5678", "http://203.0.113.20:5678", "https://n8n.example.test/api"):
+            with self.subTest(address=address):
+                answers = ["native", "https://stolas.example.test", "123", "", "", address]
+                if address.startswith("http:"):
+                    answers += ["trusted"]
+                answers += ["fixture-key", "apply"]
+                with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "check_connection"), patch.object(integrate, "connect_n8n", return_value=True) as connect, patch.object(integrate, "run") as run, patch("builtins.input", side_effect=answers):
+                    self.assertEqual(integrate.integrate(self.root, "api"), 0)
+                self.assertEqual(connect.call_args.args[1]["url"], address)
+                saved = (self.root / "n8n/settings.json").read_text()
+                self.assertEqual(json.loads(saved)["url"], address)
+                self.assertNotIn("fixture-key", saved)
+                run.assert_not_called()
 
     def test_failed_network_change_restores_core_and_keeps_manual_export(self):
         facts = self.installed_core()
@@ -302,9 +350,20 @@ class RealN8nTests(unittest.TestCase):
         for kind, values in (("telegramApi", {"accessToken": "123:fixture-not-a-real-bot", "baseUrl": "https://api.telegram.org"}), ("httpHeaderAuth", {"name": "Authorization", "value": "Bearer " + "a" * 40})):
             integrate.request_json(base + "/api/v1", "/credentials", key, {"name": "Existing " + kind, "type": kind, "data": values}, n8n=True)
         before = integrate.list_credentials(options)
-        with tempfile.TemporaryDirectory() as directory, patch("builtins.input", side_effect=["1", "connect"]), patch("getpass.getpass") as secret:
+        with tempfile.TemporaryDirectory() as directory, patch("getpass.getpass") as secret:
             root = Path(directory)
-            self.assertTrue(integrate.connect_n8n(root, options, {"STOLAS_API_TOKEN": "a" * 40}, integrate.workflow(ROOT, options)))
+            (root / "n8n").mkdir()
+            (root / "n8n/stolas.json").write_bytes((ROOT / "n8n/stolas.json").read_bytes())
+            (root / ".env").write_text("STOLAS_LISTEN=127.0.0.1\nSTOLAS_PORT=8080\nSTOLAS_API_TOKEN=" + "a" * 40 + "\n")
+            facts = dict(docker={"available": True}, stolas=[], n8n=[], addresses=[], timezone="Europe/Moscow")
+            # Core health is covered separately; all n8n API calls here are real.
+            answers = ["native", "", "trusted", "123", "", "", base, "trusted", key, "apply", "1", "connect"]
+            with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "check_connection"), patch("builtins.input", side_effect=answers):
+                self.assertEqual(integrate.integrate(root, "api"), 0)
+            saved = json.loads((root / "n8n/settings.json").read_text())
+            self.assertEqual(saved["url"], base)
+            self.assertTrue(saved["http_trusted"] and saved["n8n_http_trusted"])
+            self.assertNotIn(key, (root / "n8n/settings.json").read_text())
             state = json.loads((root / "n8n/install-state.json").read_text())
             workflow = integrate.request_json(base + "/api/v1", "/workflows/" + state["workflow_id"], key, n8n=True)
         secret.assert_not_called()
