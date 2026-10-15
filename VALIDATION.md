@@ -25,7 +25,7 @@
 | Снимки, откат, права владельца | `test_backup_retention.py`, `test_permissions.py`, неуспешное обновление и явный откат в Docker |
 | Zombie-процессы и SIGTERM | `test_process_lifecycle.py`, `ContainerProcessTests` в `test_runtime_docker.py` |
 | Секреты, TLS и чужие ресурсы | `test_integration_transport.py`, `test_events.py`, `test_publication.py`, `test_entrypoints.py`, `test_runtime.py` |
-| n8n | Экспорт и импорт с существующими credentials в `test_integrations.py`, две реальные сети в `test_environment.py`, `workflow.test.cjs` |
+| n8n | Выбор проекта и его credentials, пустой проект, экспорт и реальный ручной импорт в `test_integrations.py`; транспорт в `test_integration_transport.py`, две реальные сети в `test_environment.py`, `workflow.test.cjs` |
 | Закреплённые APK | `test_apk_lock.py`, preflight обеих архитектур в `test_artifacts.py` |
 
 Сквозной Docker-набор проверяет пустую историю до явного измерения, обе скорости,
@@ -82,6 +82,14 @@ Docker runtime-сценариям нужен собранный `stolas:ci`, д�
 Перед сборками проверяй загрузку VM, память, диск и чужие активные задачи.
 Не останавливай чужие контейнеры ради тестов. Пропуск интеграционного теста
 означает отсутствие результата в этой среде, а не успех.
+
+В реальном Community n8n 2.42.6 API проектов возвращает 403 из-за отсутствия
+лицензированной возможности, даже с `project:list`. Тест проверяет этот отказ,
+отсутствие изменений настроек/Core и ресурсов n8n, затем ручной импорт неактивного
+workflow с существующими credentials. Лицензия и проверки доступа не подменяются.
+Выбор из пагинированного списка проектов, пустой проект и фильтрация credentials
+покрыты автономными проверками контракта. Полный автоматический сценарий на
+лицензированном n8n остаётся непроверенным; это ограничение среды, а не успех CI.
 
 ## Дочерние процессы и завершение контейнера
 
