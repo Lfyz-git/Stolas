@@ -51,6 +51,8 @@ assert.match(success.text, /14\.01.*15:00.*15\.01.*15:00 МСК/);
 assert.match(success.text, /750,1 Мбит\/с/);
 assert.match(success.text, /625,9 Мбит\/с/);
 assert.match(success.text, /Проблем по результатам тестов не выявлено/);
+assert.equal(success.text.split('\n').at(-1),
+  'ℹ️ Отчёт сформирован на основе сохранённых результатов измерений за последние 24 часа.');
 assert.doesNotMatch(success.text, /Statuses:|Average DL|Stolas daily summary/);
 assert.match(daily(normal, 'Etc/UTC').text, /12:00 UTC/);
 assert.match(daily(normal, undefined).text, /15:00/);
