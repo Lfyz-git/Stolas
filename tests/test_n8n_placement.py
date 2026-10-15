@@ -121,7 +121,7 @@ class PlacementTests(unittest.TestCase):
                 self.assertEqual(self.api["STOLAS_PORT"], "9090")
                 self.assertEqual(options["topology"], "remote")
                 self.assertEqual(options["endpoint"], "https://stolas.example.test")
-        self.assertIn("Сохранить текущий listener", self.output.getvalue())
+        self.assertIn("Сохранить текущий адрес API", self.output.getvalue())
 
     def test_legacy_migration_can_cancel_before_any_file_changes(self):
         before = dict(self.api)
@@ -144,11 +144,11 @@ class PlacementTests(unittest.TestCase):
     def test_local_bind_failure_and_endpoint_failure_have_distinct_diagnostics(self):
         options = dict(topology="remote", endpoint="https://stolas.example.test")
         with patch.object(integrate, "request_json", side_effect=RuntimeError("private-secret")):
-            with self.assertRaisesRegex(integrate.IntegrationConnectionError, "Локальный listener") as error:
+            with self.assertRaisesRegex(integrate.IntegrationConnectionError, "Локальный адрес API") as error:
                 integrate.check_connection(self.root, options, self.api, ["docker", "compose"])
         self.assertNotIn("private-secret", str(error.exception))
         with patch.object(integrate, "request_json", side_effect=[dict(status="ready"), RuntimeError("private-secret")]):
-            with self.assertRaisesRegex(integrate.IntegrationConnectionError, "Endpoint n8n недоступен"):
+            with self.assertRaisesRegex(integrate.IntegrationConnectionError, "Адрес подключения n8n недоступен"):
                 integrate.check_connection(self.root, options, self.api, ["docker", "compose"])
 
     def test_wildcard_local_health_check_uses_loopback(self):
