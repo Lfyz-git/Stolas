@@ -28,7 +28,7 @@ class IntegrationConnectionError(RuntimeError):
 
 
 def connection_url(value, topology=None):
-    """Endpoint syntax is independent of placement; HTTP trust is confirmed by UI."""
+    """Validate endpoint syntax independently of placement."""
     try:
         parsed = urllib.parse.urlsplit(value)
         port = parsed.port
@@ -47,19 +47,6 @@ def connection_url(value, topology=None):
     if address is not None and (address.is_unspecified or address.is_multicast):
         raise ValueError("Endpoint должен содержать адрес, доступный клиенту")
     return value.rstrip("/")
-
-
-def confirm_http(value, service):
-    """Confirm transport choice without inferring or changing the network route."""
-    if urllib.parse.urlsplit(value).scheme != "http":
-        return False
-    credential = "Authorization: Bearer" if service == "Stolas" else "X-N8N-API-KEY"
-    ui().result("HTTP сам по себе не шифрует соединение и ключ доступа.", "warning")
-    ui().line(service + ": ключ передаётся в заголовке " + credential + ".")
-    ui().line("Защиту сетевого пути настраиваете вы.")
-    if choice("Продолжить с указанным HTTP-адресом?", ("trusted", "cancel"), "cancel") != "trusted":
-        raise Cancel()
-    return True
 
 
 def listener(value):
@@ -117,6 +104,7 @@ def validate_listener(api, facts, root):
 def collect_topology(api, facts=None, root=ROOT, previous=None):
     facts = facts if facts is not None else environment.discover(root)
     previous = previous or {}
+    saved_direct = f"http://{api['STOLAS_LISTEN']}:{api['STOLAS_PORT']}"
     legacy = previous.get("topology") in ("lan", "vpn", "proxy")
     default = "remote" if legacy else previous.get("topology", "docker" if facts["n8n"] else "")
     topology = choice("Где работает n8n", ("docker", "native", "remote"), default)
@@ -148,7 +136,7 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
         candidates = local_listener_candidates(facts)
         items = [*candidates, None]
         names = [item["interface"] + " — " + item["address"] + ":8080" + (" (Docker bridge)" if item["bridge"] else "") for item in candidates]
-        ui().line("Локальный IP:порт, на котором Stolas будет слушать. Маршрутизацию и firewall настройте самостоятельно.")
+        ui().line("Локальный IP:порт, на котором Stolas будет слушать.")
         default_index = next((index for index, item in enumerate(candidates) if item["address"] == api["STOLAS_LISTEN"]), 0)
         selected = select_named("Listener Stolas", items, [*names, "Ввести IPv4:порт вручную"], default=default_index, automatic=False)
         binding = selected["address"] + ":8080" if selected else ask("Локальный IPv4:порт Stolas", api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"], lambda value: ":".join(listener(value)))
@@ -167,15 +155,36 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
         api.pop("STOLAS_BIND_CONFIRMED", None)
     validate_listener(api, facts, root)
     direct = "" if address.is_unspecified else f"http://{api['STOLAS_LISTEN']}:{api['STOLAS_PORT']}"
-    default_endpoint = previous.get("endpoint", direct) if preserve or previous.get("endpoint_override") else direct
-    ui().line("Endpoint — URL Stolas, который использует n8n; он задаётся отдельно от listener.")
-    ui().line("Встроенный API Stolas работает по HTTP. HTTPS требует настроенного вами reverse proxy с сертификатом.")
-    ui().line("Выпуск, продление сертификата и доверие к внутреннему CA настраивает администратор.")
-    options["endpoint"] = ask("Адрес Stolas для n8n", default_endpoint, connection_url)
+    # Preserve explicit and older unflagged overrides relative to the saved bind.
+    saved_endpoint = previous.get("endpoint")
+    override = saved_endpoint and (previous.get("endpoint_override") or saved_endpoint.rstrip("/") != saved_direct)
+    endpoint = saved_endpoint if override else direct
+    if not endpoint:
+        raise BindingError("Для выбранного listener нужен отдельно настроенный endpoint Stolas")
+    options["endpoint"] = connection_url(endpoint)
     options["endpoint_override"] = options["endpoint"] != direct
-    if confirm_http(options["endpoint"], "Stolas"):
-        options["http_trusted"] = True
     return options
+
+
+def list_projects(options):
+    """Read accessible Public API projects, including projects without credentials."""
+    projects, seen, cursor = {}, set(), None
+    for _ in range(100):
+        path = "/projects?limit=100" + ("&cursor=" + urllib.parse.quote(cursor, safe="") if cursor else "")
+        page = request_json(options["url"] + "/api/v1", path, options["key"], n8n=True)
+        if not isinstance(page.get("data"), list):
+            raise ValueError("Список проектов недоступен в этой версии n8n")
+        for item in page["data"]:
+            if isinstance(item, dict) and item.get("id"):
+                identifier = str(item["id"])
+                projects[identifier] = {"id": identifier, "name": str(item.get("name") or identifier)}
+        cursor = page.get("nextCursor")
+        if not cursor:
+            return list(projects.values())
+        if not isinstance(cursor, str) or cursor in seen:
+            break
+        seen.add(cursor)
+    raise ValueError("Не удалось прочитать весь список проектов; используйте ручной импорт")
 
 
 def list_credentials(options):
@@ -193,7 +202,9 @@ def list_credentials(options):
             for shared in item.get("shared", []):
                 project = shared.get("project", {})
                 # Public API versions return either a relation or a flat project.
-                identifier = shared.get("projectId") or project.get("id") or shared.get("id")
+                identifier = shared.get("projectId") or project.get("id")
+                if not identifier and shared.get("role") in ("credential:owner", "credential:user"):
+                    identifier = shared.get("id")
                 if identifier:
                     projects.append({"id": str(identifier), "name": project.get("name") or shared.get("name") or str(identifier)})
             items.append({"id": str(item["id"]), "name": str(item.get("name", item["id"])),
@@ -280,13 +291,13 @@ def check_connection(root, options, api, compose):
         ui().result("API доступен из контейнера n8n")
     else:
         try:
-            request_json(options["endpoint"], "/healthz", api["STOLAS_API_TOKEN"])
+            if request_json(options["endpoint"], "/healthz", api["STOLAS_API_TOKEN"]).get("status") != "ready":
+                raise RuntimeError("not_ready")
         except ServiceRequestError as error:
             raise IntegrationConnectionError("Endpoint Stolas для n8n: " + str(error)) from None
         except (RuntimeError, ValueError, OSError):
             raise IntegrationConnectionError("Endpoint n8n недоступен с этого хоста. Локальный listener проверен; проверьте URL, DNS и связность. Доступ с другого хоста подтверждается Manual test в n8n") from None
         ui().result("API доступен с этой машины")
-        ui().line("В n8n выполните Manual test для проверки доступа.")
 
 
 
@@ -315,21 +326,29 @@ def connect_n8n(root, options, api, data):
         ui().line("Файл: " + str(local))
         ui().line("В n8n сохраните резервную копию workflow, обновите его из файла, проверьте credentials и timezone " + options["timezone"] + ", выполните Manual test и опубликуйте изменения расписания. Новый workflow не создаётся.")
         return False
+    resource = "проектов"
     try:
+        projects = list_projects(options)
+        if not projects:
+            ui().result("Нет доступных проектов n8n. Используйте ручной импорт.", "warning")
+            return False
+        if len(projects) == 1:
+            project = select_named("Проект n8n", projects, [p["name"] for p in projects])
+        else:
+            for index, project in enumerate(projects, 1):
+                ui().line(f"  {index}. {project['name']}")
+            index = ask("Проект n8n — номер варианта", "", integer(1, len(projects)))
+            project = projects[index - 1]
+        resource = "credentials выбранного проекта"
         items = list_credentials(options)
     except ServiceRequestError as error:
-        ui().result(str(error), "warning")
+        ui().result("Не удалось прочитать список " + resource + ": " + str(error), "warning")
         ui().line("Файл подготовлен для ручного импорта.")
         return False
     except (RuntimeError, ValueError):
-        ui().result("n8n не разрешил чтение списка credentials. Файл подготовлен для ручного импорта.", "warning")
+        ui().result("Список " + resource + " недоступен: проверьте права API-ключа и версию n8n. Используйте ручной импорт.", "warning")
         return False
-    projects = {p["id"]: p for c in items for p in c["projects"]}
-    if not projects:
-        ui().result("n8n не сообщил проекты credentials. Используйте ручной импорт.", "warning")
-        return False
-    project = select_named("Проект workflow", list(projects.values()), [p["name"] for p in projects.values()])
-    # Presentation scope only. n8n must enforce authorization on the server.
+    # Explicit ownership/sharing establishes membership; n8n enforces key permissions.
     items = [c for c in items if any(p["id"] == project["id"] for p in c["projects"])]
     telegram = credential_choice(items, "telegramApi")
     if telegram is None:
@@ -367,8 +386,9 @@ def connect_n8n(root, options, api, data):
     state["template_sha256"] = template_sha
     state.pop("pending")
     write_private(state_path, json.dumps(state) + "\n")
-    ui().result("неактивный workflow создан")
-    ui().line(options["url"] + "/workflow/" + urllib.parse.quote(state["workflow_id"], safe=""))
+    ui().line("Готово: workflow создан в n8n.")
+    ui().line("Статус: неактивен.")
+    ui().line("Адрес: " + options["url"] + "/workflow/" + urllib.parse.quote(state["workflow_id"], safe=""))
     return True
 
 
@@ -395,8 +415,6 @@ def integrate(root, mode=None):
             options["summary_hour"] = ask("Час сводки", previous.get("summary_hour", 9), integer(0, 23)) if options["notification_mode"] == "daily_summary" else 9
             if selected_mode == "api":
                 options["url"] = ask("Адрес n8n", previous.get("url", ""), connection_url)
-                if confirm_http(options["url"], "n8n"):
-                    options["n8n_http_trusted"] = True
                 ui().line("Ключ будет виден при вставке. Он используется только сейчас и не сохраняется.")
                 options["key"] = ask("API key, созданный вами в n8n", "", matching(r"[^\s]+"))
             ui().stage("Проверьте подключение")
@@ -431,9 +449,8 @@ def integrate(root, mode=None):
             safe = {k: v for k, v in options.items() if k not in ("key", "bot_token")}
             write_private(settings, json.dumps(safe, ensure_ascii=False, indent=2) + "\n")
             connected = connect_n8n(root, options, api, data)
-            ui().line("Импорт: " + str(layout.integration_path(root, "local.json")))
-            ui().line("Выберите Header Auth и Telegram credential в n8n.")
-            ui().line("Выполните Manual test; затем включите расписание.")
+            if not connected:
+                ui().line("Импорт: " + str(layout.integration_path(root, "local.json")))
             return 0 if connected else 2
         except (ValueError, RuntimeError) as error:
             ui().result("Подключение не завершено. Core продолжает работать.", "warning")

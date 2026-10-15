@@ -71,16 +71,16 @@ class DiscoveryTests(unittest.TestCase):
         with patch.object(env, "command", side_effect=self.command), patch.object(env.shutil, "which", side_effect=lambda name: name if name in tools else None):
             return env.discover(self.root)
 
-    def topology(self, answers=None, facts=None):
+    def topology(self, answers=None, facts=None, previous=None):
         api = {"STOLAS_LISTEN": "127.0.0.1", "STOLAS_PORT": "8080", "STOLAS_API_TOKEN": "a" * 40}
-        with patch("builtins.input", side_effect=[*(answers or ["docker"]), "", "trusted"]) as prompt, patch.object(env, "port_state", return_value="free"):
-            result = integrate.collect_topology(api, facts or self.discover(), self.root)
+        with patch("builtins.input", side_effect=answers or ["docker"]) as prompt, patch.object(env, "port_state", return_value="free"):
+            result = integrate.collect_topology(api, facts or self.discover(), self.root, previous)
         return api, result, prompt.call_count
 
     def test_official_image_with_arbitrary_name_is_auto_selected(self):
         facts = self.discover()
         api, options, count = self.topology(facts=facts)
-        self.assertEqual(count, 3)  # Placement, optional endpoint and HTTP trust.
+        self.assertEqual(count, 1)  # Placement only.
         self.assertEqual(api["STOLAS_LISTEN"], "172.18.0.1")
         self.assertEqual(options["endpoint"], "http://172.18.0.1:8080")
         self.assertEqual(options["docker_id"], "abc")
@@ -91,7 +91,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_compose_metadata_detects_custom_image_and_requires_confirmation(self):
         self.container.update(image="private/automation-custom:v1", service="n8n", name="editor")
         _, result, count = self.topology(["docker", "1"])
-        self.assertEqual(count, 4)
+        self.assertEqual(count, 2)
         self.assertEqual(result["docker_container"], "editor")
 
     def test_workers_are_not_treated_as_editors(self):
@@ -114,7 +114,7 @@ class DiscoveryTests(unittest.TestCase):
         self.containers.append(second)
         _, result, count = self.topology(["docker", "2"])
         self.assertEqual(result["docker_id"], "second")
-        self.assertEqual(count, 4)
+        self.assertEqual(count, 2)
         self.assertIn("other-project", self.output.getvalue())
 
     def test_multiple_networks_offer_actual_interfaces(self):
@@ -122,7 +122,7 @@ class DiscoveryTests(unittest.TestCase):
         self.networks.append(dict(self.network, id="net2", name="secondary", ipam=[{"Gateway": "172.19.0.1"}]))
         self.addresses.append({"ifname": "br-secondary", "addr_info": [{"local": "172.19.0.1"}]})
         api, options, count = self.topology(["docker", "2"])
-        self.assertEqual(count, 4)
+        self.assertEqual(count, 2)
         self.assertEqual(api["STOLAS_LISTEN"], "172.19.0.1")
         self.assertEqual(options["network"], "secondary")
         self.assertIn("br-secondary", self.output.getvalue())
@@ -177,12 +177,12 @@ class DiscoveryTests(unittest.TestCase):
         self.container.update(mode="host", networks={})
         api, options, count = self.topology()
         self.assertEqual(options["endpoint"], "http://127.0.0.1:8080")
-        self.assertEqual(count, 3)  # Placement, endpoint and explicit HTTP confirmation.
+        self.assertEqual(count, 1)  # Placement only.
         self.assertEqual(api["STOLAS_LISTEN"], "127.0.0.1")
 
     def test_busy_port_selects_free_port_and_recomputes_endpoint(self):
         api = {"STOLAS_LISTEN": "127.0.0.1", "STOLAS_PORT": "8080"}
-        with patch("builtins.input", side_effect=["docker", "", "trusted"]), patch.object(env, "port_state", side_effect=["busy", "free", "free"]):
+        with patch("builtins.input", side_effect=["docker"]), patch.object(env, "port_state", side_effect=["busy", "free", "free"]):
             result = integrate.collect_topology(api, self.discover(), self.root)
         self.assertEqual(result["endpoint"], "http://172.18.0.1:8081")
         self.assertIn("8080 занят", self.output.getvalue())
@@ -198,7 +198,7 @@ class DiscoveryTests(unittest.TestCase):
         request.assert_not_called()
 
     def test_remote_https_is_user_information_and_never_public_bind(self):
-        api, result, count = self.topology(["remote", "1", "https://monitor.example.test"])
+        api, result, count = self.topology(["remote", "1"], previous=dict(endpoint="https://monitor.example.test"))
         self.assertEqual(api["STOLAS_LISTEN"], "127.0.0.1")
         self.assertEqual(result["endpoint"], "https://monitor.example.test")
 
@@ -381,7 +381,7 @@ class DockerNetworkIntegrationTests(unittest.TestCase):
                         listener.bind((choice["address"], 0))
                         port = listener.getsockname()[1]
                     api = dict(STOLAS_API_TOKEN="a" * 40, STOLAS_LISTEN="127.0.0.1", STOLAS_PORT=str(port))
-                    with patch("builtins.input", side_effect=["docker", str(index + 1), "", "trusted"]):
+                    with patch("builtins.input", side_effect=["docker", str(index + 1)]):
                         options = integrate.collect_topology(api, facts, root)
                     integrate.validate_discovered_endpoint(dict(api=api, n8n={**options, "mode": "export"}), facts, root)
                     self.assertEqual(api["STOLAS_LISTEN"], choice["address"])

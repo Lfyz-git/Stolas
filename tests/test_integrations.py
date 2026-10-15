@@ -32,6 +32,7 @@ class IntegrationTests(unittest.TestCase):
         self.api = dict(STOLAS_API_TOKEN="a" * 40, STOLAS_LISTEN="127.0.0.1", STOLAS_PORT="8080")
         self.data = integrate.workflow(ROOT, self.options)
         self.items = [self.credential("tg", "telegramApi"), self.credential("api", "httpHeaderAuth")]
+        self.projects = [dict(id="p1", name="Personal project")]
         self.calls = []
         self.output = io.StringIO()
         self.redirect = contextlib.redirect_stdout(self.output)
@@ -44,7 +45,7 @@ class IntegrationTests(unittest.TestCase):
     def request(self, base, path, token, body=None, n8n=False):
         self.calls.append((path, copy.deepcopy(body)))
         if body is None:
-            return {"data": self.items, "nextCursor": None}
+            return {"data": self.projects if path.startswith("/projects?") else self.items, "nextCursor": None}
         return {"id": "new-id"}
 
     def connect(self, answers=("1", "connect")):
@@ -129,11 +130,74 @@ class IntegrationTests(unittest.TestCase):
 
     def test_selected_project_never_displays_foreign_credential_names(self):
         self.items.extend([self.credential("FOREIGN_TELEGRAM", "telegramApi", "p2"), self.credential("FOREIGN_API", "httpHeaderAuth", "p2")])
-        self.assertTrue(self.connect(("1", "1", "connect")))
+        self.assertTrue(self.connect(("1", "connect")))
         self.assertNotIn("FOREIGN_TELEGRAM", self.output.getvalue())
         self.assertNotIn("FOREIGN_API", self.output.getvalue())
         body = next(body for path, body in self.calls if path == "/workflows")
         self.assertEqual(body["projectId"], "p1")
+
+    def test_projects_paginate_independently_of_credentials(self):
+        pages = [{"data": self.projects, "nextCursor": "next/page"},
+                 {"data": [dict(id="empty", name="Empty project")], "nextCursor": None}]
+        with patch.object(integrate, "request_json", side_effect=pages) as request:
+            projects = integrate.list_projects(self.options)
+        self.assertEqual([p["id"] for p in projects], ["p1", "empty"])
+        self.assertEqual(request.call_args.args[1], "/projects?limit=100&cursor=next%2Fpage")
+        with patch.object(integrate, "request_json", return_value=pages[0]), self.assertRaises(ValueError):
+            integrate.list_projects(self.options)
+        with patch.object(integrate, "request_json", return_value={}), self.assertRaises(ValueError):
+            integrate.list_projects(self.options)
+
+    def test_empty_project_is_selectable_without_falling_back_to_another_project(self):
+        self.projects.append(dict(id="empty", name="Empty project"))
+        self.assertFalse(self.connect(("2",)))
+        self.assertIn("Empty project", self.output.getvalue())
+        self.assertNotIn("tg credential", self.output.getvalue())
+        self.assertFalse(any(body for path, body in self.calls))
+        self.assertEqual([path for path, body in self.calls],
+                         ["/projects?limit=100", "/credentials?limit=100"])
+
+    def test_numbered_project_selection_requires_a_valid_choice(self):
+        self.projects.insert(0, dict(id="empty", name="Empty project"))
+        self.items.extend([self.credential("other", "telegramApi", "empty"),
+                           self.credential("wrong_type", "postgres")])
+        self.assertTrue(self.connect(("", "3", "2", "1", "connect")))
+        payload = next(body for path, body in self.calls if path == "/workflows")
+        self.assertEqual(payload["projectId"], "p1")
+        self.assertNotIn("other credential", self.output.getvalue())
+        self.assertNotIn("wrong_type", self.output.getvalue())
+
+    def test_shared_credential_is_available_in_selected_project(self):
+        self.projects = [dict(id="p2", name="Shared project")]
+        for item in self.items:
+            item["shared"].append(dict(projectId="p2", role="credential:user"))
+        self.assertTrue(self.connect())
+        payload = next(body for path, body in self.calls if path == "/workflows")
+        self.assertEqual(payload["projectId"], "p2")
+
+    def test_matching_project_name_or_untyped_relation_id_is_not_access(self):
+        for shared in ([dict(name="Personal project")], [dict(id="p1", name="Personal project")]):
+            with self.subTest(shared=shared):
+                self.items[0]["shared"] = shared
+                self.assertFalse(self.connect(()))
+        self.assertFalse(any(body for path, body in self.calls))
+
+    def test_project_api_failure_stops_before_credentials_or_creation(self):
+        with patch.object(integrate, "request_json", side_effect=integrate.ServiceRequestError("HTTP 403")) as request:
+            self.assertFalse(integrate.connect_n8n(self.root, self.options, self.api, self.data))
+        self.assertEqual(request.call_count, 1)
+        text = " ".join(self.output.getvalue().split())
+        self.assertIn("проектов: HTTP 403", text)
+        self.assertIn("ручного импорта", text)
+
+    def test_final_output_has_three_lines_and_one_plain_workflow_url(self):
+        self.assertTrue(self.connect())
+        text = self.output.getvalue()
+        self.assertTrue(text.endswith("Готово: workflow создан в n8n.\nСтатус: неактивен.\nАдрес: https://n8n.example.test/workflow/new-id\n"))
+        self.assertEqual(text.count("https://n8n.example.test/workflow/new-id"), 1)
+        self.assertNotIn("Manual test", text)
+        self.assertNotIn("Выберите Header Auth", text)
+        self.assertNotIn("[https://", text)
 
     def test_host_timezone_change_exports_existing_workflow_without_remote_mutation(self):
         self.assertTrue(self.connect())
@@ -211,7 +275,7 @@ class IntegrationTests(unittest.TestCase):
         facts["timezone"] = "Europe/Moscow"
         (self.root / "n8n/settings.json").write_text(json.dumps({"timezone": "Europe/Berlin"}))
         original = (self.root / ".env").read_bytes()
-        with patch.dict(os.environ, {"TZ": "Etc/UTC"}), patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "request_json", return_value={"status": "ready"}), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "", "trusted", "123", "", "", "apply"]) as prompt, patch("getpass.getpass") as secret:
+        with patch.dict(os.environ, {"TZ": "Etc/UTC"}), patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "request_json", return_value={"status": "ready"}), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "123", "", "", "apply"]) as prompt, patch("getpass.getpass") as secret:
             self.assertEqual(integrate.integrate(self.root, "export"), 0)
         secret.assert_not_called(); run.assert_not_called()
         self.assertEqual((self.root / ".env").read_bytes(), original)
@@ -222,45 +286,28 @@ class IntegrationTests(unittest.TestCase):
             if node["name"] in ("Settings", "Summary settings"):
                 self.assertIn('"timezone": "Europe/Moscow"', node["parameters"]["jsCode"])
 
-    def test_http_n8n_cancel_happens_before_key_requests_and_configuration_changes(self):
+    def test_cancel_before_apply_does_not_request_key_or_change_configuration(self):
         facts = self.installed_core()
         original = (self.root / ".env").read_bytes()
-        answers = ["native", "", "trusted", "123", "", "", "http://192.0.2.20:5678", ""]
-        with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "request_json") as request, patch.object(integrate, "run") as run, patch("builtins.input", side_effect=answers):
+        with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "request_json") as request, patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "123", "", "", "cancel"]):
             with self.assertRaises(integrate.Cancel):
-                integrate.integrate(self.root, "api")
-        request.assert_not_called()
-        run.assert_not_called()
-        self.assertEqual((self.root / ".env").read_bytes(), original)
-        self.assertFalse((self.root / "n8n/settings.json").exists())
-        self.assertFalse((self.root / "n8n/local.json").exists())
-        self.assertNotIn("API key, созданный", self.output.getvalue())
-
-    def test_stolas_http_cancel_happens_before_key_requests_and_configuration_changes(self):
-        facts = self.installed_core()
-        original = (self.root / ".env").read_bytes()
-        with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "request_json") as request, patch.object(integrate, "run") as run, patch("builtins.input", side_effect=["native", "http://stolas.example.test:8080", "cancel"]):
-            with self.assertRaises(integrate.Cancel):
-                integrate.integrate(self.root, "api")
+                integrate.integrate(self.root, "export")
         request.assert_not_called()
         run.assert_not_called()
         self.assertEqual((self.root / ".env").read_bytes(), original)
         self.assertFalse((self.root / "n8n/local.json").exists())
-        self.assertNotIn("API key, созданный", self.output.getvalue())
 
     def test_safe_connection_diagnostic_is_shown_instead_of_credential_permission_claim(self):
         with patch.object(integrate, "request_json", side_effect=integrate.ServiceRequestError("Сертификат HTTPS не прошёл проверку.")):
             self.assertFalse(integrate.connect_n8n(self.root, self.options, self.api, self.data))
-        self.assertIn("Сертификат HTTPS не прошёл проверку", self.output.getvalue())
+        self.assertIn("Сертификат HTTPS не прошёл проверку", " ".join(self.output.getvalue().split()))
         self.assertNotIn("не разрешил чтение", self.output.getvalue())
 
-    def test_wizard_preserves_user_http_n8n_address_after_confirmation(self):
+    def test_wizard_preserves_n8n_address_without_transport_confirmation(self):
         facts = self.installed_core()
         for address in ("http://192.168.50.20:5678/api", "http://n8n.example.test:5678", "http://203.0.113.20:5678", "https://n8n.example.test/api"):
             with self.subTest(address=address):
-                answers = ["native", "https://stolas.example.test", "123", "", "", address]
-                if address.startswith("http:"):
-                    answers += ["trusted"]
+                answers = ["native", "123", "", "", address]
                 answers += ["fixture-key", "apply"]
                 with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "check_connection"), patch.object(integrate, "connect_n8n", return_value=True) as connect, patch.object(integrate, "run") as run, patch("builtins.input", side_effect=answers):
                     self.assertEqual(integrate.integrate(self.root, "api"), 0)
@@ -269,6 +316,18 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(json.loads(saved)["url"], address)
                 self.assertNotIn("fixture-key", saved)
                 run.assert_not_called()
+
+    def test_complete_api_wizard_finishes_without_manual_instructions(self):
+        facts = self.installed_core()
+        answers = ["native", "123", "", "", self.options["url"], "fixture-key", "apply", "1", "connect"]
+        with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "check_connection"), patch.object(integrate, "request_json", side_effect=self.request), patch.object(integrate, "run") as run, patch("builtins.input", side_effect=answers) as prompt:
+            self.assertEqual(integrate.integrate(self.root, "api"), 0)
+        run.assert_not_called()
+        text = self.output.getvalue()
+        self.assertTrue(text.endswith("Статус: неактивен.\nАдрес: https://n8n.example.test/workflow/new-id\n"))
+        for removed in ("Выберите Header Auth", "Manual test", "Продолжить с указанным HTTP", "reverse proxy", "X-N8N-API-KEY", "Импорт:"):
+            self.assertNotIn(removed, text)
+        self.assertEqual(prompt.call_count, len(answers))
 
     def test_failed_network_change_restores_core_and_keeps_manual_export(self):
         facts = self.installed_core()
@@ -292,7 +351,7 @@ class IntegrationTests(unittest.TestCase):
                 pass
             def do_GET(self):
                 received.append((self.path, None))
-                self.reply({"data": items, "nextCursor": None})
+                self.reply({"data": [dict(id="p1", name="Project")] if self.path.startswith("/api/v1/projects?") else items, "nextCursor": None})
             def do_POST(self):
                 received.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
                 self.reply({"id": "created"})
@@ -306,7 +365,7 @@ class IntegrationTests(unittest.TestCase):
         self.options["url"] = f"http://127.0.0.1:{server.server_port}"
         with patch("builtins.input", side_effect=["1", "connect"]):
             self.assertTrue(integrate.connect_n8n(self.root, self.options, self.api, self.data))
-        self.assertEqual([p for p, b in received], ["/api/v1/credentials?limit=100", "/api/v1/workflows"])
+        self.assertEqual([p for p, b in received], ["/api/v1/projects?limit=100", "/api/v1/credentials?limit=100", "/api/v1/workflows"])
 
 
 @unittest.skipUnless(HAS_TOOLS and os.getenv("STOLAS_N8N_INTEGRATION") == "1", "Opt-in isolated pinned n8n API integration")
@@ -343,7 +402,7 @@ class RealN8nTests(unittest.TestCase):
                 time.sleep(.5)
         # This is fixture setup in a disposable instance, never the user's n8n.
         rest("/rest/owner/setup", {"email": "ci@example.test", "firstName": "Stolas", "lastName": "CI", "password": "FixtureOnlyN8n123!"})
-        key = rest("/rest/api-keys", {"label": "Stolas integration test", "scopes": ["credential:list", "credential:create", "workflow:create", "workflow:read"], "expiresAt": None})["rawApiKey"]
+        key = rest("/rest/api-keys", {"label": "Stolas integration test", "scopes": ["project:list", "credential:list", "credential:create", "workflow:create", "workflow:read"], "expiresAt": None})["rawApiKey"]
         # Different from the disposable n8n container's UTC default: the host
         # zone already verified by the wizard must survive the actual API import.
         options = dict(mode="api", endpoint="http://127.0.0.1:8080", url=base, key=key, chat_id="123", hours=3, timezone="Europe/Moscow")
@@ -357,12 +416,13 @@ class RealN8nTests(unittest.TestCase):
             (root / ".env").write_text("STOLAS_LISTEN=127.0.0.1\nSTOLAS_PORT=8080\nSTOLAS_API_TOKEN=" + "a" * 40 + "\n")
             facts = dict(docker={"available": True}, stolas=[], n8n=[], addresses=[], timezone="Europe/Moscow")
             # Core health is covered separately; all n8n API calls here are real.
-            answers = ["native", "", "trusted", "123", "", "", base, "trusted", key, "apply", "1", "connect"]
+            answers = ["native", "123", "", "", base, key, "apply", "1", "connect"]
             with patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch.object(integrate, "docker_command", return_value=["docker", "compose"]), patch.object(integrate, "check_connection"), patch("builtins.input", side_effect=answers):
                 self.assertEqual(integrate.integrate(root, "api"), 0)
             saved = json.loads((root / "n8n/settings.json").read_text())
             self.assertEqual(saved["url"], base)
-            self.assertTrue(saved["http_trusted"] and saved["n8n_http_trusted"])
+            self.assertNotIn("http_trusted", saved)
+            self.assertNotIn("n8n_http_trusted", saved)
             self.assertNotIn(key, (root / "n8n/settings.json").read_text())
             state = json.loads((root / "n8n/install-state.json").read_text())
             workflow = integrate.request_json(base + "/api/v1", "/workflows/" + state["workflow_id"], key, n8n=True)
