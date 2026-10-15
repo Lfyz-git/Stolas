@@ -126,7 +126,7 @@ jobs:
       - name: Validate Docker Compose
         env:
           STOLAS_API_TOKEN: ci-placeholder-not-deployed
-        run: sudo -n docker compose config --quiet
+        run: sudo -n env STOLAS_API_TOKEN="$STOLAS_API_TOKEN" docker compose config --quiet
 
       - name: Build Docker image
         env:
