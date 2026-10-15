@@ -96,7 +96,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(sum("exec" in args for args in self.calls), 0)
         self.assertTrue(any("--wait" in args for args in self.calls))
         self.assertTrue(any("validate" in args for args in self.calls))
-        self.assertIn("API отвечает, авторизация проверена", self.output.getvalue())
+        self.assertEqual(self.output.getvalue().count("Готово: Stolas Core запущен"), 1)
         self.assertIn("Stolas Core запущен", self.output.getvalue())
         self.assertNotIn("Тест скорости (", self.output.getvalue())
         self.assertFalse((self.root / "n8n/local.json").exists())

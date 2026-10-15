@@ -39,13 +39,13 @@ def connection_url(value, topology=None):
             or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value)):
         raise ValueError("Нужен URL http/https без логина, query и fragment")
     if parsed.netloc.endswith(":") or port is not None and not 1 <= port <= 65535:
-        raise ValueError("Порт endpoint должен быть от 1 до 65535")
+        raise ValueError("Порт адрес подключения должен быть от 1 до 65535")
     try:
         address = ipaddress.ip_address(parsed.hostname)
     except ValueError:
         address = None
     if address is not None and (address.is_unspecified or address.is_multicast):
-        raise ValueError("Endpoint должен содержать адрес, доступный клиенту")
+        raise ValueError("Адрес подключения должен содержать адрес, доступный клиенту")
     return value.rstrip("/")
 
 
@@ -109,7 +109,7 @@ def validate_listener(api, facts, root):
     if state == "not_local":
         raise BindingError("Адрес прослушивания отсутствует на этом хосте; выберите локальный IPv4 или повторно запустите мастер")
     if state == "busy":
-        raise BindingError("Порт прослушивания занят; выберите другой IP:порт. Endpoint n8n пока не проверялся")
+        raise BindingError("Порт прослушивания занят; выберите другой IP:порт. Адрес подключения n8n пока не проверялся")
     raise BindingError("ОС запрещает привязку API; проверьте права и выберите доступный локальный IP:порт")
 
 
@@ -123,8 +123,8 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
     options = {"topology": topology}
     preserve = False
     if legacy:
-        ui().line("Старая схема подключения заменяется размещением n8n. Текущий listener: " + api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"])
-        preserve = choice("Сохранить текущий listener и проверить endpoint?", ("keep", "change"), "keep") == "keep"
+        ui().line("Старая схема подключения заменяется размещением n8n. Текущий адрес API: " + api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"])
+        preserve = choice("Сохранить текущий адрес API и проверить адрес подключения?", ("keep", "change"), "keep") == "keep"
     if topology == "docker":
         if not facts["docker"]["available"]:
             raise ValueError(facts["docker"]["reason"] + ". Исправьте доступ и повторно запустите мастер, либо выберите другую схему")
@@ -150,7 +150,7 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
         names = [item["interface"] + " — " + item["address"] + ":8080" + (" (Docker bridge)" if item["bridge"] else "") for item in candidates]
         ui().line("Локальный IP:порт, на котором Stolas будет слушать. Маршрутизацию и firewall настройте самостоятельно.")
         default_index = next((index for index, item in enumerate(candidates) if item["address"] == api["STOLAS_LISTEN"]), 0)
-        selected = select_named("Listener Stolas", items, [*names, "Ввести IPv4:порт вручную"], default=default_index, automatic=False)
+        selected = select_named("Адрес API Stolas", items, [*names, "Ввести IPv4:порт вручную"], default=default_index, automatic=False)
         binding = selected["address"] + ":8080" if selected else ask("Локальный IPv4:порт Stolas", api["STOLAS_LISTEN"] + ":" + api["STOLAS_PORT"], lambda value: ":".join(listener(value)))
         api["STOLAS_LISTEN"], api["STOLAS_PORT"] = listener(binding)
     elif topology == "native" and not preserve:
@@ -159,7 +159,7 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
         propose_port(api, facts, root)
     address = ipaddress.IPv4Address(api["STOLAS_LISTEN"])
     if address.is_unspecified or address.is_global:
-        ui().result("Listener может открыть API внешним клиентам. Проверьте firewall и доверие к сети", "warning")
+        ui().result("Выбранный адрес открывает API внешним клиентам. Проверьте firewall и доверие к сети", "warning")
         if choice("Явно разрешить выбранное прослушивание?", ("allow_bind", "cancel"), "cancel") != "allow_bind":
             raise Cancel()
         api["STOLAS_BIND_CONFIRMED"] = "1"
@@ -168,10 +168,8 @@ def collect_topology(api, facts=None, root=ROOT, previous=None):
     validate_listener(api, facts, root)
     direct = "" if address.is_unspecified else f"http://{api['STOLAS_LISTEN']}:{api['STOLAS_PORT']}"
     default_endpoint = previous.get("endpoint", direct) if preserve or previous.get("endpoint_override") else direct
-    ui().line("Endpoint — URL Stolas, который использует n8n; он задаётся отдельно от listener.")
-    ui().line("Встроенный API Stolas работает по HTTP. HTTPS требует настроенного вами reverse proxy с сертификатом.")
-    ui().line("Выпуск, продление сертификата и доверие к внутреннему CA настраивает администратор.")
-    options["endpoint"] = ask("Адрес Stolas для n8n", default_endpoint, connection_url)
+    options["endpoint"] = ask("Адрес Stolas для n8n", default_endpoint, connection_url,
+                              help_text="Для HTTPS укажите адрес настроенного обратного прокси с сертификатом.")
     options["endpoint_override"] = options["endpoint"] != direct
     if confirm_http(options["endpoint"], "Stolas"):
         options["http_trusted"] = True
@@ -231,7 +229,7 @@ def validate_discovered_endpoint(plan, facts, root=ROOT):
     choices, reasons = environment.host_candidates(selected, facts)
     host = plan["api"]["STOLAS_LISTEN"]
     if not any(c["address"] == host for c in choices):
-        raise BindingError("Локальный listener не соответствует обнаруженным сетям n8n; повторите выбор размещения. Endpoint может быть задан отдельно. " + "; ".join(reasons))
+        raise BindingError("Локальный адрес API не соответствует обнаруженным сетям n8n; повторите выбор размещения. Адрес подключения может быть задан отдельно. " + "; ".join(reasons))
     options["docker_id"] = selected["id"]
     options["network_mode"] = selected["mode"]
 
@@ -260,9 +258,9 @@ def check_connection(root, options, api, compose):
             if request_json(f"http://{host}:{api['STOLAS_PORT']}", "/healthz", api["STOLAS_API_TOKEN"]).get("status") != "ready":
                 raise RuntimeError("not_ready")
         except ServiceRequestError as error:
-            raise IntegrationConnectionError("Локальный listener Stolas: " + str(error)) from None
+            raise IntegrationConnectionError("Локальный адрес API Stolas: " + str(error)) from None
         except (RuntimeError, ValueError, OSError):
-            raise IntegrationConnectionError("Локальный listener Stolas не отвечает с авторизацией. Проверьте привязку IP:порта и состояние Core; endpoint n8n пока не проверен") from None
+            raise IntegrationConnectionError("Локальный адрес API Stolas не отвечает с авторизацией. Проверьте привязку IP:порта и состояние Core; адрес подключения n8n пока не проверен") from None
     container = options.get("docker_id") or options.get("docker_container")
     if options.get("topology") == "docker" and container:
         code = "let s='';process.stdin.on('data',x=>s+=x);process.stdin.on('end',async()=>{try{const p=JSON.parse(s);const r=await fetch(p.url+'/healthz',{headers:{Authorization:'Bearer '+p.token},redirect:'error',signal:AbortSignal.timeout(8000)});const j=await r.json();process.exit(r.status===200&&j.status==='ready'?0:1)}catch{process.exit(1)}})"
@@ -272,19 +270,19 @@ def check_connection(root, options, api, compose):
                                     input=json.dumps({"url": options["endpoint"], "token": api["STOLAS_API_TOKEN"]}),
                                     text=True, capture_output=True, timeout=15)
         except subprocess.TimeoutExpired:
-            raise IntegrationConnectionError("Проверка endpoint из n8n превысила 15 секунд; проверьте связность и URL. Локальный listener проверен") from None
+            raise IntegrationConnectionError("Проверка адрес подключения из n8n превысила 15 секунд; проверьте связность и URL. Локальный адрес API проверен") from None
         if result.returncode:
             if result.returncode in (126, 127) or "executable file not found" in result.stderr.lower():
                 raise RuntimeError("Node.js недоступен в контейнере n8n. Проверьте HTTP Request через Manual test. Файл: " + str(layout.integration_path(root, "local.json")))
-            raise IntegrationConnectionError("n8n Docker не достигает endpoint /healthz. Локальный listener проверен; проверьте URL и связность из n8n; контейнер n8n не изменён")
+            raise IntegrationConnectionError("n8n Docker не достигает адрес подключения /healthz. Локальный адрес API проверен; проверьте URL и связность из n8n; контейнер n8n не изменён")
         ui().result("API доступен из контейнера n8n")
     else:
         try:
             request_json(options["endpoint"], "/healthz", api["STOLAS_API_TOKEN"])
         except ServiceRequestError as error:
-            raise IntegrationConnectionError("Endpoint Stolas для n8n: " + str(error)) from None
+            raise IntegrationConnectionError("Адрес подключения Stolas для n8n: " + str(error)) from None
         except (RuntimeError, ValueError, OSError):
-            raise IntegrationConnectionError("Endpoint n8n недоступен с этого хоста. Локальный listener проверен; проверьте URL, DNS и связность. Доступ с другого хоста подтверждается Manual test в n8n") from None
+            raise IntegrationConnectionError("Адрес подключения n8n недоступен с этого хоста. Локальный адрес API проверен; проверьте URL, DNS и связность. Доступ с другого хоста подтверждается Manual test в n8n") from None
         ui().result("API доступен с этой машины")
         ui().line("В n8n выполните Manual test для проверки доступа.")
 

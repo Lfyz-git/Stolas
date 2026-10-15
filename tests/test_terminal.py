@@ -56,10 +56,50 @@ class TerminalTests(unittest.TestCase):
         for field in ("n8n", "Telegram", "required", "route.mode", "gateway"):
             self.assertNotIn(field, output)
         self.assertIn("Проверять основной канал перед тестами?\n\n  1.", output)
-        self.assertIn("\n\nВыберите вариант\nВвод [1]:", output)
+        self.assertNotIn("Выберите вариант", output)
+        self.assertIn("  2. Нет, пропускать проверку\n\nВвод [1]:", output)
         self.assertIn("Шаг 4 из 4", output)
         self.assertIn("Готово: Stolas Core запущен", output)
         self.assertTrue(all(len(line) <= 80 for line in output.splitlines()))
+
+    def test_shared_question_blocks_at_small_widths(self):
+        from tools import integrate
+        for width in (20, 40, 80):
+            with self.subTest(width=width):
+                stream = io.StringIO()
+                with contextlib.redirect_stdout(stream), patch.dict(os.environ, {"COLUMNS": str(width)}), patch("builtins.input", side_effect=lambda prompt: (print(prompt), "1")[1]):
+                    install.ui().result("настройки сохранены")
+                    install.choice("Продолжить настройку?", ("keep", "cancel"), "keep", help_text="Сохранённые значения можно изменить.")
+                    integrate.choice("Как подключить n8n?", ("export", "api"), "export")
+                output = stream.getvalue()
+                self.assertIn("сохранены\n\n", output)
+                self.assertEqual(output.count("Ввод [1]:"), 2)
+                self.assertNotIn("Выберите вариант", output)
+                self.assertTrue(all(len(line) <= width for line in output.splitlines()))
+
+    def test_update_layout_at_small_width(self):
+        from tools import manage
+        stream = io.StringIO()
+        response = io.BytesIO(b"# simulated bootstrap")
+        with contextlib.redirect_stdout(stream), patch.dict(os.environ, {"COLUMNS": "24"}), patch.object(install, "require_docker_access"), patch.object(manage.urllib.request, "urlopen", return_value=response), patch.object(manage.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)):
+            self.assertEqual(manage.update(Path("/tmp/stolas-example"), "v0.6.5"), 0)
+        output = stream.getvalue()
+        self.assertIn("STOLAS · Обновление", output)
+        self.assertIn("Версия: v0.6.5", output)
+        self.assertTrue(all(len(line) <= 24 for line in output.splitlines()))
+
+    def test_configuration_uses_sections_without_changing_values(self):
+        import copy
+        for width in (24, 80):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), patch.dict(os.environ, {"COLUMNS": str(width)}), patch("builtins.input", return_value=""):
+                original = copy.deepcopy(install.DEFAULT)
+                original["route"]["expected_public_cidrs"] = ["192.0.2.1/32"]
+                configured = install.collect_config(original)
+            self.assertEqual(configured, original)
+            self.assertIn("STOLAS ·", output.getvalue())
+            self.assertNotIn("WAN", output.getvalue())
+            self.assertTrue(all(len(line) <= width for line in output.getvalue().splitlines()))
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Real SSH-style PTY runs in Linux CI")
     def test_management_real_tty_and_no_color(self):
