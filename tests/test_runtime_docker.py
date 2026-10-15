@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+import urllib.error
 import urllib.request
 import uuid
 
@@ -66,10 +67,15 @@ class RuntimeDockerTests(unittest.TestCase):
             args.append("--configure-only")
         if reuse:
             args.append("--reuse-config")
+        if recover:
+            args.append("--recover")
         if skip_first_test:
             args.append("--skip-first-test")
         result = subprocess.run(args, input="apply\nlater\n", text=True, capture_output=True, env=install.clean_env(), timeout=240)
-        self.assertIn(result.returncode, (0, 2), result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        if not configure_only:
+            self.assertIn("API отвечает, авторизация проверена", result.stdout)
+        self.assertNotIn("Тест скорости (", result.stdout)
         self.owned_images.add("stolas:" + resources.core_version(target))
         env = resources.read_env(target)
         if env.get("STOLAS_DATA_VOLUME"):
@@ -152,20 +158,33 @@ class RuntimeDockerTests(unittest.TestCase):
         deploy.mark_backup(initial, "complete")
         deploy.atomic_json(self.root / ".stolas/state/transaction.json",
                            {"phase": "complete", "backup": initial.relative_to(self.root).as_posix(), "configured": False})
-        self.assertEqual(self.api_latest()["status"], "ok")
-        sample = self.api_latest()
+        # Startup and recovery must leave history empty until an explicit run.
+        for recover in (False, True):
+            if recover:
+                self.installer(self.root, recover=True)
+            with self.assertRaises(urllib.error.HTTPError) as missing:
+                self.api_latest()
+            self.assertEqual(missing.exception.code, 404)
+            with missing.exception as response:
+                self.assertEqual(json.load(response), {"error": "no_results"})
         env = resources.read_env(self.root)
         volume = env["STOLAS_DATA_VOLUME"]
         before = resources.volume_info(self.root, ["docker"], volume)
         def cli(*args, answer=""):
             return subprocess.run(["sh", str(self.root / "stolas"), *args], input=answer,
                                   capture_output=True, text=True, timeout=150, env=install.clean_env())
+        measured = cli("run", "--json")
+        self.assertEqual(measured.returncode, 0, measured.stdout + measured.stderr)
+        sample = json.loads(measured.stdout)
+        self.assertEqual(sample["status"], "ok")
+        self.assertEqual(self.api_latest()["id"], sample["id"])
         def configure(node):
             cfg.update(node=node, min_interval=86400)
             install.save_draft(self.root, {"config": cfg, "api": install.read_api(self.root), "completed": []})
             result = cli("configure", answer="resume\napply\nlater\n")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("сервис и API проверены", result.stdout)
+            self.assertIn("API отвечает, авторизация проверена", result.stdout)
+            self.assertIn("Stolas Core запущен", result.stdout)
             self.assertNotIn("Тест скорости (", result.stdout)
             self.assertEqual(install.validated(self.root / "config/local.json")["node"], node)
             self.assertEqual(deploy.read_json(self.root / ".stolas/state/transaction.json")["phase"], "complete")

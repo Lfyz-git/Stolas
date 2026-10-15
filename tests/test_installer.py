@@ -38,30 +38,31 @@ class InstallerTests(unittest.TestCase):
         redirect.__enter__()
         self.addCleanup(redirect.__exit__, None, None, None)
 
-    def install(self, options=None, configure_only=False, cli_status="ok", cli_code=0, skip_first_test=False, failed_stage=None):
+    def install(self, options=None, configure_only=False, skip_first_test=False, failed_stage=None, recover=False):
         self.calls = []
 
         def command(args, root, capture=False, check=True, **kwargs):
             self.calls.append(args)
             if failed_stage and failed_stage in args:
                 raise RuntimeError("failed-" + failed_stage)
-            if "exec" in args:
-                # The CLI must see the same committed settings/token as the API.
-                self.assertEqual(installer.validated(root / "config/local.json"), self.cfg)
-                self.assertIn(self.api["STOLAS_API_TOKEN"], (root / ".env").read_text())
-                return subprocess.CompletedProcess(args, cli_code, json.dumps({"status": cli_status, "primary": None, "confirmation": None}), "")
+            self.assertNotIn("exec", args, "Installation must not run a speed test")
             return subprocess.CompletedProcess(args, 0, "", "")
 
         options = {"topology": "native", "notification_mode": "alerts_only", **(options or {"mode": "later"})}
         facts = {"hostname": "test", "installation": {"directory": str(self.root), "config": False}, "docker": {"available": True, "version": "test"}, "n8n": [], "warnings": []}
-        with patch.object(installer, "collect_plan", return_value={"config": self.cfg, "api": self.api, "n8n": options, "completed": []}), patch.object(installer.environment, "discover", return_value=facts), patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "request_json", return_value={"status": "ready"}), patch.object(installer, "run", side_effect=command):
-            return installer.install(self.root, configure_only=configure_only, skip_first_test=skip_first_test)
+        with patch.object(installer.environment, "port_state", return_value="free"), patch.object(installer, "collect_plan", return_value={"config": self.cfg, "api": self.api, "n8n": options, "completed": []}), patch.object(installer.environment, "discover", return_value=facts), patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "request_json", return_value={"status": "ready"}) as health, patch.object(installer, "run", side_effect=command):
+            code = installer.install(self.root, configure_only=configure_only, skip_first_test=skip_first_test, recover=recover)
+            if configure_only:
+                health.assert_not_called()
+            else:
+                health.assert_called_once_with("http://127.0.0.1:8080", "/healthz", self.api["STOLAS_API_TOKEN"])
+            return code
 
     def test_reconfigure_checks_service_without_measurement_even_if_cli_would_fail(self):
         for reason in ("cooldown", "busy", "external_server_unavailable"):
             with self.subTest(reason=reason), patch.object(installer, "first_test", side_effect=RuntimeError(reason)) as heavy:
                 self.cfg["node"] = "changed-" + reason
-                self.assertEqual(self.install(skip_first_test=True, cli_code=1), 0)
+                self.assertEqual(self.install(skip_first_test=True), 0)
                 heavy.assert_not_called()
                 self.assertTrue(any("validate" in args for args in self.calls))
                 self.assertTrue(any("--wait" in args for args in self.calls))
@@ -73,10 +74,10 @@ class InstallerTests(unittest.TestCase):
         # The helper patches request_json, so drive install directly here.
         facts = {"hostname": "test", "installation": {"directory": str(self.root), "config": True}, "docker": {"available": True}, "addresses": [], "stolas": [], "n8n": [], "warnings": []}
         plan = {"config": self.cfg, "api": self.api, "completed": []}
-        for reason in ("HTTP 401", "service unavailable"):
-            with self.subTest(reason=reason), patch.object(installer, "collect_plan", return_value=plan), patch.object(installer.environment, "discover", return_value=facts), patch.object(installer.environment, "port_state", return_value="free"), patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "run", return_value=subprocess.CompletedProcess([], 0)), patch.object(installer, "request_json", side_effect=RuntimeError(reason)), patch.object(installer, "first_test") as heavy:
+        for recover, reason in ((False, "HTTP 401"), (False, "service unavailable"), (True, "HTTP 401"), (True, "service unavailable")):
+            with self.subTest(recover=recover, reason=reason), patch.object(installer, "collect_plan", return_value=plan), patch.object(installer.environment, "discover", return_value=facts), patch.object(installer.environment, "port_state", return_value="free"), patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "run", return_value=subprocess.CompletedProcess([], 0)), patch.object(installer, "request_json", side_effect=RuntimeError(reason)), patch.object(installer, "first_test") as heavy:
                 with self.assertRaisesRegex(RuntimeError, reason):
-                    installer.install(self.root, skip_first_test=True)
+                    installer.install(self.root, recover=recover)
                 heavy.assert_not_called()
 
     def test_reconfigure_invalid_settings_still_fail(self):
@@ -90,11 +91,14 @@ class InstallerTests(unittest.TestCase):
             with self.subTest(stage=stage), self.assertRaisesRegex(RuntimeError, "failed-" + stage):
                 self.install(skip_first_test=True, failed_stage=stage)
 
-    def test_later_starts_service_and_runs_exactly_one_cli_cycle(self):
+    def test_install_starts_service_without_measurement(self):
         self.assertEqual(self.install(), 0)
-        self.assertEqual(sum("exec" in args for args in self.calls), 1)
+        self.assertEqual(sum("exec" in args for args in self.calls), 0)
         self.assertTrue(any("--wait" in args for args in self.calls))
         self.assertTrue(any("validate" in args for args in self.calls))
+        self.assertIn("API отвечает, авторизация проверена", self.output.getvalue())
+        self.assertIn("Stolas Core запущен", self.output.getvalue())
+        self.assertNotIn("Тест скорости (", self.output.getvalue())
         self.assertFalse((self.root / "n8n/local.json").exists())
         self.assertNotIn(self.api["STOLAS_API_TOKEN"], self.output.getvalue())
 
@@ -102,14 +106,14 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.install(configure_only=True), 0)
         self.assertEqual(self.calls, [])
 
-    def test_failed_measurement_is_not_reported_as_success(self):
-        self.assertEqual(self.install(cli_status="route_blocked", cli_code=2), 2)
-        self.assertIn("измерение не получено", self.output.getvalue())
-
-    def test_low_speed_is_a_completed_test_and_busy_is_an_error(self):
-        self.assertEqual(self.install(cli_status="low_confirmed", cli_code=2), 0)
-        with self.assertRaisesRegex(RuntimeError, "Тест не запущен"):
-            self.install(cli_code=1)
+    def test_install_and_recovery_ignore_measurement_availability(self):
+        self.install(configure_only=True)
+        for recover in (False, True):
+            with self.subTest(recover=recover), patch.object(installer, "first_test", side_effect=AssertionError("measurement forbidden")) as measurement:
+                self.assertEqual(self.install(recover=recover), 0)
+                measurement.assert_not_called()
+                self.assertFalse(any("exec" in args for args in self.calls))
+                self.assertNotRegex(self.output.getvalue(), "нагрузочный тест|измерение не получено")
 
     def test_invalid_config_does_not_overwrite_existing_files(self):
         self.install(configure_only=True)
@@ -204,13 +208,16 @@ elif "exec" in sys.argv:
         before = {name: (self.root / name).read_bytes() for name in (".env", "config/local.json")}
         with patch.object(installer.environment, "discover", return_value={"hostname":"test", "installation":{"directory":str(self.root), "config":True}, "docker":{"available":True}, "stolas":[], "addresses":[]}), patch.object(installer, "collect_config") as wizard, patch("builtins.input", side_effect=["apply"]), patch.object(installer.environment, "port_state", return_value="free"), patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), patch.object(installer, "first_test") as heavy, patch.object(installer, "request_json", return_value={"status": "ready"}) as health:
             self.assertEqual(installer.install(self.root, reuse=True), 0)
+        self.assertIn("Конфигурация и история сохранены.", self.output.getvalue())
+        self.assertNotIn("нагрузочный тест", self.output.getvalue())
+        self.assertNotIn("Сервис обновлён", self.output.getvalue())
         heavy.assert_not_called()
         wizard.assert_not_called()
         health.assert_called_once()
         for name, value in before.items():
             self.assertEqual((self.root / name).read_bytes(), value)
 
-    def test_recovery_preserves_completed_first_measurement(self):
+    def test_legacy_measurement_checkpoint_does_not_trigger_measurement(self):
         self.install(configure_only=True)
         progress = self.root / ".stolas-progress.json"
         progress.write_text(json.dumps({"config_sha256": hashlib.sha256(json.dumps(self.cfg, sort_keys=True).encode()).hexdigest(), "stage": "measured", "first_status": "ok", "measurement_done": True}))
