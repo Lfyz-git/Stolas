@@ -142,7 +142,9 @@ def configure(root, scope=None, name=None):
             break
         except FileExistsError:
             terminal.result("Имя «" + candidate + "» занято; существующая команда сохранена.", "warning")
-            candidate = ask("Другое имя команды (:cancel — оставить без команды)", "stolas-home")
+            if choice("Выбрать другое имя команды?", ("change", "cancel"), "change") == "cancel":
+                return
+            candidate = ask("Другое имя команды", "stolas-home")
     terminal.result("Команда установлена: " + record["path"])
     if not in_path(directory):
         terminal.line("Для текущей сессии добавьте каталог в PATH:")
@@ -151,13 +153,12 @@ def configure(root, scope=None, name=None):
 
 
 def offer(root):
-    from tools.install import Back, Cancel, Rescan
     from tools.terminal import ui
     if read(root):
         return
     try:
         configure(root)
-    except (Back, Cancel, Rescan, EOFError, KeyboardInterrupt):
+    except EOFError:
         ui().line("Команда в PATH не настроена. Позже: " + diagnostics.command(root, "command install"))
     except (OSError, ValueError, RuntimeError) as error:
         from tools import layout

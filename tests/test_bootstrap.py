@@ -218,7 +218,7 @@ esac
         docker.chmod(0o755)
         self.make_archive(real=True)
         for attempt in range(2):
-            code, output = self.pipeline(answers=":cancel\n")
+            code, output = self.pipeline(answers="off\n5\n")
             self.assertEqual(code, 3, output)
             self.assertFalse((self.target / ".env").exists())
             self.assertFalse((self.target / "config/local.json").exists())

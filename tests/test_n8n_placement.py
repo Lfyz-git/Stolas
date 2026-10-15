@@ -126,7 +126,7 @@ class PlacementTests(unittest.TestCase):
     def test_legacy_migration_can_cancel_before_any_file_changes(self):
         before = dict(self.api)
         with self.assertRaises(install.Cancel):
-            self.collect(["remote", ":cancel"], dict(topology="vpn", endpoint="http://10.8.0.1:8080"))
+            self.collect(["remote", "keep", "", "2"], dict(topology="vpn", endpoint="http://10.8.0.1:8080"))
         self.assertEqual(self.api, before)
         self.assertEqual(list(self.root.iterdir()), [])
 
