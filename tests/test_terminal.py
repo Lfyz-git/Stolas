@@ -1,3 +1,5 @@
+import contextlib
+import copy
 import io
 import os
 from pathlib import Path
@@ -10,28 +12,21 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 HAS_TOOLS = (ROOT / "tools/terminal.py").exists()
 if HAS_TOOLS:
-    from tools.terminal import Terminal
+    from tools import install
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 @unittest.skipUnless(HAS_TOOLS, "Installer UI not shipped in Core image")
 class TerminalTests(unittest.TestCase):
-    def test_color_and_plain_output(self):
-        stream = io.StringIO()
-        stream.isatty = lambda: True
-        terminal = Terminal(stream)
-        with patch.dict(os.environ, {"TERM": "xterm-256color"}):
-            os.environ.pop("NO_COLOR", None)
-            terminal.stage("Проверка системы", 1)
-        self.assertIn("\x1b[", stream.getvalue())
-        for env in ({"NO_COLOR": ""}, {"TERM": "dumb"}):
-            stream.seek(0); stream.truncate(0)
-            with patch.dict(os.environ, env):
-                terminal.stage("Проверка системы", 1)
-            self.assertNotIn("\x1b", stream.getvalue())
-        stream.isatty = lambda: False
-        self.assertEqual(terminal.style("value", "heading"), "value")
+    def test_shared_prompts_preserve_configuration_and_hide_secret_defaults(self):
+        original = copy.deepcopy(install.DEFAULT)
+        original["route"]["expected_public_cidrs"] = ["192.0.2.1/32"]
+        with contextlib.redirect_stdout(io.StringIO()) as output, patch("builtins.input", return_value=""):
+            self.assertEqual(install.collect_config(original), original)
+        with contextlib.redirect_stdout(output), patch.object(install.getpass, "getpass", return_value="") as prompt:
+            self.assertEqual(install.ask("Токен", "fixture-secret", secret=True), "fixture-secret")
+        self.assertNotIn("fixture-secret", output.getvalue() + prompt.call_args.args[0])
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Real SSH-style PTY runs in Linux CI")
     def test_real_tty_installation_retries_invalid_input(self):
