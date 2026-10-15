@@ -17,8 +17,12 @@ if HAS_TOOLS:
 
 class SeparationTests(unittest.TestCase):
     def test_container_start_and_restart_never_measure(self):
-        self.assertIn('CMD ["serve"]', (ROOT / 'Dockerfile').read_text())
-        self.assertNotIn('command:', (ROOT / 'compose.yaml').read_text())
+        # Deployment manifests exist in the source tree, not the runtime image.
+        # Verify their contents on the host; always exercise serve behavior.
+        if (ROOT / 'Dockerfile').is_file():
+            self.assertIn('CMD ["serve"]', (ROOT / 'Dockerfile').read_text())
+        if (ROOT / 'compose.yaml').is_file():
+            self.assertNotIn('command:', (ROOT / 'compose.yaml').read_text())
         with tempfile.TemporaryDirectory() as data:
             for _ in range(2):
                 server = Mock()
