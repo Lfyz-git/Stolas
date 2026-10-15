@@ -114,7 +114,7 @@ class TerminalTests(unittest.TestCase):
                 self.assertTrue(all(len(line) <= 80 for line in plain.splitlines()))
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Real SSH-style PTY runs in Linux CI")
-    def test_real_tty_80_columns_color_navigation_and_errors(self):
+    def test_real_tty_80_columns_color_input_and_errors(self):
         import fcntl
         import pty
         import select
@@ -152,7 +152,7 @@ class TerminalTests(unittest.TestCase):
         self.assertIn("\x1b[31m", rendered)
         plain = ANSI.sub("", rendered).replace("\r", "")
         self.assertIn("введите номер от 1 до 2", plain)
-        self.assertGreaterEqual(plain.count("Шаг 2 из 4"), 2)
+        self.assertEqual(plain.count("Шаг 2 из 4"), 1)
         self.assertIn("Stolas Core запущен", plain)
         self.assertTrue(all(len(line) <= 80 for line in plain.splitlines()))
         # CI artifact is the actual terminal output, including ANSI colors.

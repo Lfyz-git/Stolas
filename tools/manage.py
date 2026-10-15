@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools import diagnostics, entrypoints, environment, layout, resources, timezones
 from tools.deploy import atomic_json, install_lock, legacy_files, prune_empty, read_json, replace_file, runtime_files, safe_path
-from tools.install import Back, Cancel, Rescan, ask, choice, clean_env, first_test, LABELS
+from tools.install import Cancel, ask, choice, clean_env, first_test, LABELS
 from tools.terminal import ui
 
 
@@ -319,7 +319,7 @@ def main():
     except subprocess.TimeoutExpired:
         print("Превышен лимит ожидания Docker. Проверьте stolas diagnose и stolas logs; тест в контейнере мог продолжить работу.", file=sys.stderr)
         return 124
-    except (Back, Cancel, Rescan):
+    except Cancel:
         ui().result("Действие отменено")
         return 3
     except (KeyboardInterrupt, EOFError):

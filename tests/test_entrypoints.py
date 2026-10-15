@@ -36,6 +36,17 @@ class EntrypointTests(unittest.TestCase):
         self.output = redirect.__enter__()
         self.addCleanup(redirect.__exit__, None, None, None)
 
+    def test_command_name_conflict_can_cancel_with_numbered_option(self):
+        with patch.object(entrypoints, "install", side_effect=FileExistsError) as create, patch("builtins.input", return_value="2"):
+            entrypoints.configure(self.root, scope="user")
+        create.assert_called_once()
+        self.assertFalse(entrypoints.state_path(self.root).exists())
+
+    def test_command_offer_propagates_process_interrupt(self):
+        with patch.object(entrypoints, "configure", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            entrypoints.offer(self.root)
+        self.assertFalse(entrypoints.state_path(self.root).exists())
+
     def install(self, root=None, name="stolas"):
         with patch.object(entrypoints.shutil, "which", return_value=None):
             return entrypoints.install(root or self.root, self.binary, name)
@@ -219,8 +230,8 @@ elif args[:2] == ['volume','inspect']: sys.exit(1)
         env = {**os.environ, "PATH": str(self.binary) + os.pathsep + os.environ["PATH"], "TEST_DOCKER_LOG": str(log)}
         commands = [(["help"], "", 0), (["diagnose", "--json"], "", 0), (["history"], "", 0),
                     (["run", "--json"], "", 0), (["run"], "", 0), (["logs"], "", 7),
-                    (["configure"], ":cancel\n", 3), (["update", "--version", "invalid"], "", 1),
-                    (["rollback"], "", 0), (["integrate", "n8n", "--mode", "export"], ":cancel\n", 3),
+                    (["configure"], "5\n", 3), (["update", "--version", "invalid"], "", 1),
+                    (["rollback"], "", 0), (["integrate", "n8n", "--mode", "export"], ":cancel\n", 130),
                     (["uninstall"], "cancel\n", 0)]
         for args, answer, expected in commands:
             with self.subTest(command=args):

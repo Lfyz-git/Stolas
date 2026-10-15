@@ -218,26 +218,53 @@ class DiscoveryTests(unittest.TestCase):
         self.assertFalse((self.root / "config/local.json").exists())
         self.assertNotIn(plan["api"]["STOLAS_API_TOKEN"], self.output.getvalue())
 
-    def test_cancel_and_back_keep_live_configuration_untouched(self):
+    def test_numbered_cancel_keeps_live_configuration_untouched(self):
         facts = self.discover()
-        answers = ["", "192.0.2.1/32", ":back", "off", "api", ":back", "cancel"]
+        answers = ["", "192.0.2.1/32", "5"]
         with patch("builtins.input", side_effect=answers), patch.object(env, "port_state", return_value="free"), self.assertRaises(install.Cancel):
             install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
         self.assertFalse((self.root / ".env").exists())
         self.assertFalse((self.root / ".stolas-draft.json").exists())
 
-    def test_interrupt_and_resume_preserve_token_and_finished_wan_step(self):
+    def test_interrupt_does_not_save_unconfirmed_settings(self):
         facts = self.discover()
-        with patch("builtins.input", side_effect=["", "192.0.2.1/32", KeyboardInterrupt]), self.assertRaises(KeyboardInterrupt):
-            install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
-        draft = json.loads((self.root / ".stolas-draft.json").read_text())
-        self.assertEqual(draft["completed"], ["wan"])
-        if os.name != "nt":
-            self.assertEqual((self.root / ".stolas-draft.json").stat().st_mode & 0o777, 0o600)
-        with patch("builtins.input", side_effect=["resume", "apply"]) as prompt, patch.object(env, "port_state", return_value="free"):
-            plan = install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
-        self.assertEqual(plan["api"]["STOLAS_API_TOKEN"], draft["api"]["STOLAS_API_TOKEN"])
-        self.assertEqual(prompt.call_count, 2)
+        for answers in (["", KeyboardInterrupt], ["", "192.0.2.1/32", KeyboardInterrupt]):
+            with self.subTest(answers=answers), patch("builtins.input", side_effect=answers), patch.object(env, "port_state", return_value="free"), self.assertRaises(KeyboardInterrupt):
+                install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
+            self.assertFalse((self.root / ".stolas-draft.json").exists())
+            self.assertFalse((self.root / ".env").exists())
+            self.assertFalse((self.root / "config/local.json").exists())
+
+    def test_interrupt_preserves_existing_configuration_and_recovery_data(self):
+        facts = self.discover()
+        cfg = copy.deepcopy(install.DEFAULT)
+        cfg["route"]["expected_public_cidrs"] = ["192.0.2.1/32"]
+        saved = dict(config=cfg, api=dict(STOLAS_LISTEN="127.0.0.1", STOLAS_PORT="8080", STOLAS_API_TOKEN="a" * 40), completed=["wan"])
+        files = {"config/local.json": json.dumps(cfg),
+                 ".env": "STOLAS_LISTEN=127.0.0.1\nSTOLAS_PORT=8080\nSTOLAS_API_TOKEN=" + "a" * 40,
+                 ".stolas-draft.json": json.dumps(saved),
+                 ".stolas-progress.json": '{"stage":"configured"}',
+                 ".stolas-backups/restore/config/local.json": json.dumps(cfg),
+                 "history.json": '[{"status":"ok"}]'}
+        for name, content in files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        with patch("builtins.input", side_effect=["resume", "wan", "off", KeyboardInterrupt]), patch.object(env, "port_state", return_value="free"), self.assertRaises(KeyboardInterrupt):
+            install.collect_plan(self.root, cfg, facts)
+        for name, content in files.items():
+            self.assertEqual((self.root / name).read_text(), content)
+
+    def test_removed_commands_use_normal_input_validation(self):
+        commands = [":back", ":cancel", ":rescan", "назад", "отмена", "обновить"]
+        for command in commands:
+            with self.subTest(command=command):
+                with patch("builtins.input", side_effect=[command, ""]):
+                    self.assertEqual(install.choice("Выбор", ("apply", "cancel"), "apply"), "apply")
+                with patch("builtins.input", return_value=command):
+                    self.assertEqual(install.ask("Текст"), command)
+                with patch.object(install.getpass, "getpass", side_effect=[command, ""]):
+                    self.assertEqual(install.ask("Число", 42, install.integer(1), secret=True), 42)
 
     def test_existing_configuration_opens_summary_without_reasking_fields(self):
         facts = self.discover()
