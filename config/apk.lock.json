@@ -22,9 +22,9 @@
       },
       {
         "name": "apk-tools",
-        "version": "3.0.8-r0",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/apk-tools-3.0.8-r0.apk",
-        "sha256": "405adef9f3bbd761bffb046b81221cb41c4edc59e0c0b9115dd8963f02d22596"
+        "version": "3.0.9-r0",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/apk-tools-3.0.9-r0.apk",
+        "sha256": "f830a4d4fe7c4f66f24541aa591e39cbbdb459b9e5a76e67f5ef4d720c8c8961"
       },
       {
         "name": "busybox",
@@ -70,9 +70,9 @@
       },
       {
         "name": "libapk",
-        "version": "3.0.8-r0",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/libapk-3.0.8-r0.apk",
-        "sha256": "f5be42fcc282ebd4e0e2f5bd8bfef7365b895dbba0756ab5091a6ce19332a081"
+        "version": "3.0.9-r0",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/libapk-3.0.9-r0.apk",
+        "sha256": "0a1a013c18c3ef007791bf68f86e5b27764a208e0836b8cd4c56cf222695e6fa"
       },
       {
         "name": "libbz2",
@@ -208,9 +208,9 @@
       },
       {
         "name": "zlib",
-        "version": "1.3.2-r1",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/zlib-1.3.2-r1.apk",
-        "sha256": "ee62e1864c235901e2aa4d1868c7ae8f7cc5d0740a98c48a2525332eb4bfda73"
+        "version": "1.4-r0",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/zlib-1.4-r0.apk",
+        "sha256": "22ff5ae6b704ac1786d6565dcb3f5dde489e44a5038297a565382b76f656ee08"
       },
       {
         "name": "zstd-libs",
@@ -240,9 +240,9 @@
       },
       {
         "name": "apk-tools",
-        "version": "3.0.8-r0",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/apk-tools-3.0.8-r0.apk",
-        "sha256": "19c7a0de80fe9c7ab9e21f93e157fe5df18d6bdb2bae055612fcd3cd9e68de06"
+        "version": "3.0.9-r0",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/apk-tools-3.0.9-r0.apk",
+        "sha256": "52e05730d7256ca321e48d618ebcdda270cf6c2522f2a27ce15c00201bfb75fa"
       },
       {
         "name": "busybox",
@@ -288,9 +288,9 @@
       },
       {
         "name": "libapk",
-        "version": "3.0.8-r0",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libapk-3.0.8-r0.apk",
-        "sha256": "36f4160a3d9e885652435f78b80b80ba2b74abbfab116958808772128b8785d5"
+        "version": "3.0.9-r0",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libapk-3.0.9-r0.apk",
+        "sha256": "89fed5d57190643d3b146162773cca0efb8edc439f56b283fbfd4912a8f3a0da"
       },
       {
         "name": "libbz2",
@@ -426,9 +426,9 @@
       },
       {
         "name": "zlib",
-        "version": "1.3.2-r1",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/zlib-1.3.2-r1.apk",
-        "sha256": "82d52fa82a46c73aae8b9f95d7f31a196137f3ce4a000980cdbbfc05c245e7bf"
+        "version": "1.4-r0",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/zlib-1.4-r0.apk",
+        "sha256": "c9bc3c75104ffba5785277b38eb83bf90ea83539e3bb26c617864fb78dcb4462"
       },
       {
         "name": "zstd-libs",
