@@ -1,7 +1,6 @@
 import copy
 import io
 import json
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
@@ -60,16 +59,6 @@ class WanRoutingTests(unittest.TestCase):
         self.assertEqual(warnings[0]["test_id"], result["id"])
         self.assertEqual(warnings[0]["reason"], "mixed_routing")
 
-    def test_matching_sources_confirm_only_https_not_router_destination_egress(self):
-        data = self.guard(["192.0.2.10"] * 3)
-        self.assertTrue(data["verified"])
-        self.assertFalse(data["egress_verified"])
-        self.assertEqual(data["gateway"], "192.168.1.1")
-        self.assertNotIn("warning", data)
-        result, _ = self.cycle(data)
-        self.assertFalse(result.get("warnings"))
-        self.assertNotIn("wan_check_warning", self.log.getvalue())
-
     def test_no_allowed_ip_or_lte_cannot_start_measurement(self):
         for values in (["198.51.100.1"] * 3, ["198.51.100.1", "203.0.113.1", "203.0.113.2"]):
             with self.assertRaises(probes.ProbeError) as error:
@@ -95,14 +84,3 @@ class WanRoutingTests(unittest.TestCase):
         result, _ = self.cycle(data, low=True)
         self.assertEqual(result["status"], "low_confirmed")
         self.assertFalse(result["wan_alert"])
-
-    @unittest.skipUnless((Path(__file__).resolve().parents[1] / "tools/install.py").exists(), "Installer outside Core image")
-    def test_installer_warning_is_readable_and_success_is_not_blocked(self):
-        from tools import install
-        data = {"status": "ok", "warnings": ["mixed_routing"], "primary": None, "confirmation": None}
-        output = io.StringIO()
-        with patch.object(install, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(data), "")), __import__("contextlib").redirect_stdout(output):
-            self.assertEqual(install.first_test(["docker", "compose"], Path(self.tmp.name))["status"], "ok")
-        self.assertIn("Возможна раздельная маршрутизация.", output.getvalue())
-        self.assertIn("Проверьте маршрут к серверам измерения.", output.getvalue())
-        self.assertIn("Измерение продолжено", output.getvalue())

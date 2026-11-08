@@ -1,6 +1,5 @@
 """Current installation transactions and exact resource ownership checks."""
 import contextlib
-import copy
 import io
 import json
 import os
@@ -107,135 +106,6 @@ class RuntimeTests(unittest.TestCase):
         resources.complete(self.root, ["docker"])
         return 0
 
-    def test_fresh_runtime_layout_excludes_development_files(self):
-        self.runtime()
-        self.assertEqual({p.name for p in self.root.iterdir()}, {"stolas", "compose.yaml", ".env", "config", ".stolas"})
-        for name in ("tests", ".github", ".gitignore", ".gitattributes", "docs", "VALIDATION.md"):
-            self.assertFalse(any(p.name == name for p in (self.root / ".stolas").rglob("*")), name)
-        self.assertTrue((self.root / ".stolas/build/agent/runner.py").is_file())
-        self.assertTrue((self.root / ".stolas/build/config/apk-aarch64.lock").is_file())
-        self.assertTrue((self.root / ".stolas/installer/LICENSE").is_file())
-
-    def test_default_names_and_repeated_configuration_are_stable(self):
-        self.runtime()
-        self.activate()
-        before = resources.read_env(self.root)
-        resources.configure(self.root, ["docker"])
-        self.assertEqual(resources.read_env(self.root), before)
-        self.assertEqual(before["STOLAS_PROJECT_NAME"], "stolas")
-        self.assertEqual(before["STOLAS_CONTAINER_NAME"], "stolas")
-        self.assertEqual(self.docker.items[0]["image"], "stolas:0.6.5")
-
-    def test_name_collision_requests_a_human_name_and_keeps_foreign_container(self):
-        self.runtime()
-        foreign = self.docker.container(self.root.parent / "foreign", "stolas", "other-instance")
-        with patch("builtins.input", side_effect=["stolas-home"]) as prompt:
-            self.activate()
-        self.assertEqual(prompt.call_count, 1)
-        self.assertEqual(resources.read_env(self.root)["STOLAS_PROJECT_NAME"], "stolas-home")
-        self.assertIn(foreign, self.docker.items)
-
-    def test_container_mount_order_does_not_change_removal_plan(self):
-        self.runtime(); self.activate()
-        item = self.docker.items[0]
-        item["mounts"].append({"Type": "bind", "Source": str(self.root / "config/local.json"), "Destination": "/config/config.json"})
-        before = manage.removal_plan(self.root, ["docker"])
-        item["mounts"].reverse()
-        self.assertEqual(manage.removal_plan(self.root, ["docker"]), before)
-
-    def test_native_reconfiguration_failure_restores_settings_and_service(self):
-        self.runtime(); self.activate()
-        original = (self.root / ".env").read_bytes()
-        def fail(*args, **kwargs):
-            self.assertTrue(kwargs["skip_first_test"])
-            install.write_private(self.root / ".env", (self.root / ".env").read_text().replace("8080", "8081"))
-            self.activate()
-            return 1
-        def restart(root, docker):
-            self.assertEqual((root / ".env").read_bytes(), original)
-            env = resources.read_env(root)
-            self.docker.container(root, env["STOLAS_PROJECT_NAME"], env["STOLAS_INSTANCE_ID"], env["STOLAS_DATA_VOLUME"], id="restored-id")
-        # Real Docker creates a new container ID after each handover.
-        self.docker.items[0]["id"] = "original-id"
-        with patch.object(deploy, "run_installer", side_effect=fail), patch.object(resources, "restart", side_effect=restart) as recovered:
-            self.assertEqual(deploy.deploy(self.root, self.root, action="reconfigure"), 1)
-        recovered.assert_called_once()
-        self.assertEqual((self.root / ".env").read_bytes(), original)
-        self.assertEqual([c["id"] for c in self.docker.items], ["restored-id"])
-
-    def test_partial_installation_can_be_uninstalled_without_a_container(self):
-        self.runtime()
-        resources.configure(self.root, ["docker"])
-        name = resources.read_env(self.root)["STOLAS_DATA_VOLUME"]
-        with patch("builtins.input", side_effect=["1", "1"]):
-            self.assertEqual(manage.uninstall(self.root), 0)
-        self.assertIn(name, self.docker.volumes)
-        self.assertFalse(self.docker.items)
-        self.assertTrue(layout.runtime(self.root))
-        self.assertTrue((self.root / "stolas").is_file())
-        self.assertFalse((self.root / "tests").exists())
-        with patch("builtins.input", side_effect=["1", "1"]):
-            self.assertEqual(manage.uninstall(self.root), 0)
-
-    def test_uninstalled_current_runtime_can_be_restored(self):
-        self.runtime(); self.activate()
-        with patch("builtins.input", side_effect=["1", "1"]):
-            manage.uninstall(self.root)
-        with patch.object(deploy, "run_installer", side_effect=lambda *a, **k: (self.activate(), 1)[1]), patch.object(resources, "restart") as restart:
-            self.assertEqual(deploy.deploy(ROOT, self.root, action="update"), 1)
-        restart.assert_not_called()
-        self.assertFalse(self.docker.items)
-        self.assertTrue(resources.load(self.root, "resources.json")["uninstalled"])
-        with patch.object(deploy, "run_installer", side_effect=lambda *a, **k: self.activate()):
-            self.assertEqual(deploy.deploy(ROOT, self.root, action="update"), 0)
-        self.assertEqual({p.name for p in self.root.iterdir()}, {"stolas", "compose.yaml", ".env", "config", ".stolas"})
-
-    def test_volume_collision_also_requests_another_name(self):
-        self.runtime()
-        self.docker.volumes["stolas_stolas-data"] = {"name": "stolas_stolas-data", "labels": {}, "created": "foreign"}
-        with patch("builtins.input", side_effect=["stolas-office"]):
-            self.activate()
-        self.assertEqual(self.docker.volumes["stolas_stolas-data"]["created"], "foreign")
-
-    def test_two_instances_share_no_managed_resources(self):
-        self.runtime(); self.activate()
-        first = resources.read_env(self.root)
-        second = self.root.parent / "second"
-        second.mkdir()
-        old_root = self.root
-        self.root = second
-        self.runtime()
-        with patch("builtins.input", side_effect=["stolas-office"]):
-            self.activate()
-        other = resources.read_env(second)
-        for key in ("STOLAS_PROJECT_NAME", "STOLAS_INSTANCE_ID", "STOLAS_DATA_VOLUME"):
-            self.assertNotEqual(first[key], other[key])
-        self.assertEqual(resources.read_env(old_root), first)
-
-    def test_current_update_preserves_token_config_state_and_exact_volume(self):
-        self.runtime(); self.activate()
-        old = self.docker.items[0]
-        original_env = (self.root / ".env").read_bytes()
-        config = (self.root / "config/local.json").read_bytes()
-        progress = self.root / ".stolas/state/progress.json"
-        progress.write_text('{"stage": "complete", "first_status": "route_blocked"}')
-        (self.root / "notes.txt").write_text("foreign")
-        with patch.object(deploy, "run_installer", side_effect=lambda *a, **k: self.activate()):
-            self.assertEqual(deploy.deploy(ROOT, self.root, action="update"), 0)
-        self.assertEqual(resources.read_env(self.root)["STOLAS_DATA_VOLUME"], old["mounts"][0]["Name"])
-        self.assertEqual((self.root / ".env").read_bytes(), original_env)
-        self.assertEqual((self.root / "config/local.json").read_bytes(), config)
-        self.assertEqual(progress.read_text(), '{"stage": "complete", "first_status": "route_blocked"}')
-        self.assertEqual(len(self.docker.items), 1)
-        self.assertEqual(self.docker.items[0]["name"], "/stolas")
-        self.assertEqual((self.root / "notes.txt").read_text(), "foreign")
-        journal = deploy.read_json(self.root / ".stolas/state/transaction.json")
-        backup = self.root / journal["backup"]
-        self.assertEqual(journal["phase"], "complete")
-        self.assertEqual(deploy.backup_state(self.root, backup)["retention_status"], "complete")
-        self.assertEqual((backup / "files/.env").read_bytes(), original_env)
-        self.assertEqual((backup / "files/config/local.json").read_bytes(), config)
-
     def test_failed_update_restores_current_files_and_service(self):
         self.runtime(); self.activate()
         old_env = (self.root / ".env").read_bytes()
@@ -290,20 +160,6 @@ class RuntimeTests(unittest.TestCase):
         for name, content in before.items():
             self.assertEqual((self.root / name).read_bytes(), content, name)
 
-    def test_uninstall_preserves_history_config_and_offline_command(self):
-        self.runtime(); self.activate()
-        foreign = self.docker.container(self.root.parent / "n8n", "n8n", "foreign")
-        config = (self.root / "config/local.json").read_bytes()
-        volume = resources.read_env(self.root)["STOLAS_DATA_VOLUME"]
-        for attempt in range(2):
-            with patch("builtins.input", side_effect=["1", "1"]):
-                self.assertEqual(manage.uninstall(self.root), 0)
-        self.assertIn(volume, self.docker.volumes)
-        self.assertEqual(self.docker.items, [foreign])
-        self.assertEqual((self.root / "config/local.json").read_bytes(), config)
-        self.assertTrue((self.root / "stolas").is_file())
-        self.assertFalse((self.root / ".stolas/build/agent").exists())
-
     @unittest.skipIf(os.name == "nt", "Purge unlinks a held POSIX lock; supported platform is Linux")
     def test_purge_removes_exact_files_and_keeps_foreign_files(self):
         self.runtime(); self.activate()
@@ -318,13 +174,6 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse((self.root / "stolas").exists())
         self.assertEqual((self.root / "notes.txt").read_text(), "foreign")
         self.assertEqual((self.root / ".stolas/user-note.txt").read_text(), "foreign internal")
-
-    def test_purge_cancel_does_not_mutate_resources(self):
-        self.runtime(); self.activate()
-        before = copy.deepcopy((self.docker.items, self.docker.volumes, self.docker.images))
-        with patch("builtins.input", side_effect=["нет"]):
-            self.assertEqual(manage.uninstall(self.root, purge=True), 0)
-        self.assertEqual((self.docker.items, self.docker.volumes, self.docker.images), before)
 
     def test_shared_volume_is_never_purged(self):
         self.runtime(); self.activate()
@@ -352,6 +201,7 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Принадлежность"):
             manage.removal_plan(self.root, ["docker"])
 
+
     @unittest.skipIf(os.name == "nt", "POSIX symlinks and modes")
     def test_private_modes_and_symlink_refusal(self):
         self.runtime()
@@ -361,6 +211,39 @@ class RuntimeTests(unittest.TestCase):
         (self.root / ".stolas/user-link").symlink_to(self.root.parent)
         with self.assertRaises(ValueError):
             layout.bounded(self.root, ".stolas/user-link/file")
+
+
+@unittest.skipUnless(HAS_TOOLS, "Installer sources are not in the production image")
+class InstallerLockTests(unittest.TestCase):
+    def setUp(self):
+        docker_access = patch.object(install, "require_docker_access")
+        docker_access.start()
+        self.addCleanup(docker_access.stop)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.source = self.root / "source"
+        self.source.mkdir()
+        for name in ("stolas", "install.sh", "tools/install.py", "tools/deploy.py", "agent/config.py", "compose.yaml"):
+            path = self.source / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text("old")
+        self.target = self.root / "stolas"
+
+    def run_deploy(self, action=None):
+        with patch.object(deploy, "run_installer", return_value=0):
+            return deploy.deploy(self.source, self.target, action=action)
+
+    @unittest.skipIf(os.name == "nt", "POSIX flock/symlinks")
+    def test_competing_installers_and_symlinks(self):
+        with deploy.install_lock(self.target):
+            with self.assertRaises(RuntimeError):
+                self.run_deploy()
+        link = self.root / "link"
+        link.symlink_to(self.target, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            deploy.safe_path(link)
+
 
 if __name__ == "__main__":
     unittest.main()

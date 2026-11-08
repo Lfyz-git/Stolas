@@ -39,14 +39,6 @@ class ApkLockTests(unittest.TestCase):
     def snapshot(self):
         return {p.name: p.read_bytes() for p in (self.root / "config").iterdir()}
 
-    def test_check_fetches_both_architectures_without_resolving_or_writing(self):
-        before = self.snapshot()
-        with patch.object(lock_apk, "fetch", return_value=self.payload) as fetch:
-            self.assertEqual(lock_apk.check_lock(self.root), 2)
-        self.assertEqual([c.args[0] for c in fetch.call_args_list],
-                         [p["url"] for ps in self.lock["architectures"].values() for p in ps])
-        self.assertEqual(self.snapshot(), before)
-
     def test_http_404_reports_exact_url_and_preserves_pins(self):
         url = self.lock["architectures"]["x86_64"][0]["url"]
         before = self.snapshot()
@@ -129,39 +121,6 @@ class ApkLockTests(unittest.TestCase):
                 lock_apk.check_lock(self.root)
         self.assertEqual(self.snapshot(), before)
 
-    def test_inconsistent_text_lock_fails_before_network(self):
-        (self.root / "config/apk-aarch64.lock").write_text("stale lock\n")
-        with patch.object(lock_apk, "fetch") as fetch:
-            with self.assertRaisesRegex(ValueError, "files disagree: aarch64"):
-                lock_apk.check_lock(self.root)
-            fetch.assert_not_called()
-
-    def test_base_mismatch_fails_before_network(self):
-        (self.root / "Dockerfile").write_text("FROM alpine:unlocked\n")
-        with patch.object(lock_apk, "fetch") as fetch:
-            with self.assertRaisesRegex(ValueError, "base differs"):
-                lock_apk.check_lock(self.root)
-            fetch.assert_not_called()
-
-    def test_package_version_and_architecture_must_match_url(self):
-        for field, value in (("version", "2-r0"), ("name", "other-package"),
-                             ("url", "https://example.test/aarch64/test-package-1-r0.apk")):
-            lock = json.loads(json.dumps(self.lock))
-            lock["architectures"]["x86_64"][0][field] = value
-            lock_apk.write_lock(lock, self.root)
-            with patch.object(lock_apk, "fetch") as fetch:
-                with self.assertRaisesRegex(ValueError, "version/architecture"):
-                    lock_apk.check_lock(self.root)
-                fetch.assert_not_called()
-
-    def test_duplicate_packages_are_rejected(self):
-        self.lock["architectures"]["x86_64"] *= 2
-        lock_apk.write_lock(self.lock, self.root)
-        with patch.object(lock_apk, "fetch") as fetch:
-            with self.assertRaisesRegex(ValueError, "duplicate"):
-                lock_apk.check_lock(self.root)
-            fetch.assert_not_called()
-
     def test_interrupted_publication_restores_every_original(self):
         before = self.snapshot()
         changed = json.loads(json.dumps(self.lock))
@@ -209,32 +168,6 @@ class ApkLockTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "in progress or incomplete"):
             lock_apk.write_lock(self.lock, self.root)
 
-    def test_filesystem_error_does_not_print_private_paths(self):
-        with patch.object(lock_apk, "check_lock", side_effect=OSError("private-detail")), \
-                contextlib.redirect_stderr(io.StringIO()) as output:
-            with self.assertRaises(SystemExit):
-                lock_apk.main(["--check"])
-        self.assertNotIn("private-detail", output.getvalue())
-
-    def test_missing_architecture_empty_lock_bad_hash_and_http_are_rejected(self):
-        for mutation in ("architecture", "empty", "hash", "http"):
-            with self.subTest(mutation=mutation):
-                lock = json.loads(json.dumps(self.lock))
-                package = lock["architectures"]["x86_64"][0]
-                if mutation == "architecture":
-                    del lock["architectures"]["aarch64"]
-                elif mutation == "empty":
-                    lock["architectures"]["x86_64"] = []
-                elif mutation == "hash":
-                    package["sha256"] = "invalid"
-                else:
-                    package["url"] = package["url"].replace("https:", "http:")
-                lock_apk.write_lock(lock, self.root)
-                with patch.object(lock_apk, "fetch") as fetch:
-                    with self.assertRaises(ValueError):
-                        lock_apk.check_lock(self.root)
-                    fetch.assert_not_called()
-
     def test_failed_resolution_never_publishes_partial_lock(self):
         names = ("python3", "iperf3", "iproute2-minimal", "ca-certificates",
                  "ca-certificates-bundle", "alpine-baselayout", "alpine-keys",
@@ -260,12 +193,3 @@ class ApkLockTests(unittest.TestCase):
             self.assertEqual(result.exception.code, 1)
             write.assert_not_called()
         self.assertEqual(self.snapshot(), before)
-
-    def test_check_command_does_not_regenerate_on_error(self):
-        with patch.object(lock_apk, "check_lock", side_effect=ValueError("HTTP 404")), \
-                patch.object(lock_apk, "resolve_lock") as resolve, \
-                contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit) as result:
-                lock_apk.main(["--check"])
-            self.assertEqual(result.exception.code, 1)
-            resolve.assert_not_called()

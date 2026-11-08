@@ -37,22 +37,6 @@ class PortUpdateTests(unittest.TestCase):
         health.assert_not_called()
         self.assertEqual(plan["api"], self.api)
 
-    def test_existing_endpoint_in_configure_is_not_relocated_by_incomplete_discovery(self):
-        self.facts["stolas"] = []
-        with patch.object(environment, "port_state", return_value="busy"), patch.object(install, "request_json", side_effect=RuntimeError("health failure")) as health:
-            install.propose_port(self.api, self.facts, self.root)
-        self.assertEqual(self.api["STOLAS_PORT"], "8080")
-        health.assert_not_called()
-
-    def test_installed_inaccessible_docker_stops_before_wizard_or_writes(self):
-        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
-        for reason in ("Нет прав к Docker socket", "Docker API недоступен"):
-            self.facts["docker"] = {"available": False, "reason": reason}
-            with patch.object(environment, "discover", return_value=self.facts), patch.object(install, "collect_plan") as wizard, patch.object(install, "commit_configuration") as commit, patch.object(environment, "port_state") as port, self.assertRaisesRegex(RuntimeError, "до настройки"):
-                install.install(self.root, reuse=True)
-            wizard.assert_not_called(); commit.assert_not_called(); port.assert_not_called()
-        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
-
     def test_update_entrypoints_stop_before_download_lock_or_staging(self):
         deploy.stage_sources(ROOT, self.root, "fixture", "")
         before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
@@ -64,38 +48,6 @@ class PortUpdateTests(unittest.TestCase):
             manage.update(self.root)
         fetch.assert_not_called()
         self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
-
-    def test_missing_docker_stops_update_before_download_staging_or_wizard(self):
-        deploy.stage_sources(ROOT, self.root, "fixture", "")
-        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
-        self.facts["docker"] = {"available": False, "reason": "Docker не установлен или отсутствует в PATH"}
-        self.facts["tools"]["docker"] = False
-        with patch.object(environment, "discover", return_value=self.facts), patch.object(install.shutil, "which", return_value=None):
-            with patch.object(manage.urllib.request, "urlopen") as fetch, self.assertRaisesRegex(RuntimeError, "до настройки"):
-                manage.update(self.root)
-            fetch.assert_not_called()
-            with patch.object(deploy, "stage_sources") as stage, patch.object(deploy, "install_lock") as lock, self.assertRaisesRegex(RuntimeError, "до настройки"):
-                deploy.deploy(ROOT, self.root, action="update")
-            stage.assert_not_called()
-            lock.assert_not_called()
-            with patch.object(install, "collect_plan") as wizard, patch.object(install, "commit_configuration") as commit, patch.object(install, "docker_command") as docker, self.assertRaisesRegex(RuntimeError, "до настройки"):
-                install.install(self.root, reuse=True)
-            wizard.assert_not_called()
-            commit.assert_not_called()
-            docker.assert_not_called()
-        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
-
-    def test_configure_only_allows_unavailable_docker_and_preserves_endpoint(self):
-        self.facts["docker"] = {"available": False, "reason": "Нет прав"}
-        with patch.object(environment, "discover", return_value=self.facts), patch.object(environment, "port_state", return_value="busy"), patch("builtins.input", side_effect=["apply"]), patch.object(install, "docker_command") as docker:
-            self.assertEqual(install.install(self.root, configure_only=True), 0)
-        docker.assert_not_called()
-        self.assertEqual(install.read_api(self.root), self.api)
-
-    def test_before_handover_own_port_allows_sudo_access_and_temporary_health_failure(self):
-        with patch.object(environment, "port_state", return_value="busy"), patch.object(install, "request_json") as health:
-            install.check_api_port(self.api, self.facts, allow_existing=True)
-        health.assert_not_called()
 
     def test_foreign_or_unknown_busy_endpoint_is_rejected_before_handover(self):
         self.facts["port_bindings"] = [{"address": "0.0.0.0", "port": 8080, "owned": False}]

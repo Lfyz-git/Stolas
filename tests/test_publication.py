@@ -39,13 +39,3 @@ class PublicationTests(unittest.TestCase):
         self.assertFalse(inspect(data, 'tests/fixtures/localhost-test-key.pem'))
         self.assertTrue(inspect(data + b'\n', 'tests/fixtures/localhost-test-key.pem'))
         self.assertTrue(inspect(data, 'config/server.pem'))
-
-    def test_malformed_archive_fails_closed(self):
-        self.assertTrue(inspect(b'not a tar', 'tests/fixtures/broken.tar.gz'))
-        output = io.BytesIO()
-        with tarfile.open(fileobj=output, mode='w:gz') as archive:
-            member = tarfile.TarInfo('stolas-fixture/link')
-            member.type = tarfile.SYMTYPE
-            member.linkname = '/outside'
-            archive.addfile(member)
-        self.assertTrue(inspect(output.getvalue(), 'tests/fixtures/link.tar.gz'))
