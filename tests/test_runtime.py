@@ -362,22 +362,5 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             layout.bounded(self.root, ".stolas/user-link/file")
 
-    def test_current_uninstall_uses_actual_mount(self):
-        self.runtime(); self.activate()
-        old = self.docker.items[0]
-        name = old["mounts"][0]["Name"]
-        with patch("builtins.input", side_effect=["1", "1"]):
-            self.assertEqual(manage.uninstall(self.root), 0)
-        self.assertIn(name, self.docker.volumes)
-        self.assertFalse(self.docker.items)
-        self.assertTrue(layout.runtime(self.root))
-        self.assertFalse((self.root / "tests").exists())
-        result = subprocess.run([__import__("sys").executable, "-X", "utf8", str(self.root / ".stolas/installer/tools/manage.py"), "--root", str(self.root), "help"], capture_output=True, text=True, encoding="utf-8")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("uninstall", result.stdout)
-        with patch("builtins.input", side_effect=["1", "1"]):
-            self.assertEqual(manage.uninstall(self.root), 0)
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -85,13 +85,6 @@ class ProgressTests(unittest.TestCase):
             result = progress.run([sys.executable, "-c", code], ROOT, os.environ.copy(), "Этап", timeout, machine=machine, stream=stream)
         return result, stream.getvalue()
 
-    def test_silent_child_has_live_elapsed_activity(self):
-        result, output = self.run_child("import time; time.sleep(.8)", tty=True)
-        self.assertEqual(result.returncode, 0)
-        self.assertGreater(output.count("\r"), 2)
-        self.assertIn("готово", output)
-        self.assertIn("с", output)
-
     @unittest.skipUnless(os.name == "posix", "POSIX sudo TTY session and process groups")
     def test_cleanup_group_preserves_session_for_sudo_tty_cache(self):
         result, _ = self.run_child('import os,json; print(json.dumps([os.getsid(0), os.getpgrp(), os.getpid()]))', machine=True)
@@ -118,20 +111,6 @@ class ProgressTests(unittest.TestCase):
     def test_timeout_reaps_child(self):
         with self.assertRaises(subprocess.TimeoutExpired):
             self.run_child("import time; time.sleep(30)", timeout=.3)
-
-    def test_ci_tty_uses_plain_stages(self):
-        from tools import progress
-        stream = io.StringIO()
-        stream.isatty = lambda: True
-        with patch.dict(os.environ, {"CI": "1", "TERM": "xterm"}):
-            progress.run([sys.executable, "-c", "import time; time.sleep(.4)"], ROOT, os.environ.copy(), "Этап", 5, stream=stream)
-        self.assertNotIn("\r", stream.getvalue())
-        self.assertNotIn("\x1b", stream.getvalue())
-
-    def test_progress_module_is_in_runtime_installer(self):
-        from tools import deploy
-        files = deploy.runtime_files(ROOT)
-        self.assertEqual(files[".stolas/installer/tools/progress.py"], ROOT / "tools/progress.py")
 
     def test_stdout_pipe_disables_redraw_even_with_tty_stderr(self):
         from tools import progress

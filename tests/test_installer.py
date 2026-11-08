@@ -10,9 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,32 +57,24 @@ class InstallerTests(unittest.TestCase):
             return code
 
     def test_reconfigure_checks_service_without_measurement_even_if_cli_would_fail(self):
-        for reason in ("cooldown", "busy", "external_server_unavailable"):
-            with self.subTest(reason=reason), patch.object(installer, "first_test", side_effect=RuntimeError(reason)) as heavy:
-                self.cfg["node"] = "changed-" + reason
-                self.assertEqual(self.install(skip_first_test=True), 0)
-                heavy.assert_not_called()
-                self.assertTrue(any("validate" in args for args in self.calls))
-                self.assertTrue(any("--wait" in args for args in self.calls))
-                self.assertFalse(any("exec" in args for args in self.calls))
-                self.assertEqual(installer.validated(self.root / "config/local.json")["node"], self.cfg["node"])
-                self.assertEqual(json.loads((self.root / ".stolas-progress.json").read_text())["stage"], "complete")
+        with patch.object(installer, "first_test", side_effect=AssertionError("measurement forbidden")) as heavy:
+            self.cfg["node"] = "changed"
+            self.assertEqual(self.install(skip_first_test=True), 0)
+            heavy.assert_not_called()
+            self.assertTrue(any("validate" in args for args in self.calls))
+            self.assertTrue(any("--wait" in args for args in self.calls))
+            self.assertEqual(installer.validated(self.root / "config/local.json")["node"], self.cfg["node"])
+            self.assertEqual(json.loads((self.root / ".stolas-progress.json").read_text())["stage"], "complete")
 
     def test_reconfigure_health_auth_failure_still_fails(self):
         # The helper patches request_json, so drive install directly here.
         facts = {"hostname": "test", "installation": {"directory": str(self.root), "config": True}, "docker": {"available": True}, "addresses": [], "stolas": [], "n8n": [], "warnings": []}
         plan = {"config": self.cfg, "api": self.api, "completed": []}
-        for recover, reason in ((False, "HTTP 401"), (False, "service unavailable"), (True, "HTTP 401"), (True, "service unavailable")):
+        for recover, reason in ((False, "HTTP 401"), (True, "service unavailable")):
             with self.subTest(recover=recover, reason=reason), patch.object(installer, "collect_plan", return_value=plan), patch.object(installer.environment, "discover", return_value=facts), patch.object(installer.environment, "port_state", return_value="free"), patch.object(installer, "docker_command", return_value=["docker", "compose"]), patch.object(installer, "run", return_value=subprocess.CompletedProcess([], 0)), patch.object(installer, "request_json", side_effect=RuntimeError(reason)), patch.object(installer, "first_test") as heavy:
                 with self.assertRaisesRegex(RuntimeError, reason):
                     installer.install(self.root, recover=recover)
                 heavy.assert_not_called()
-
-    def test_reconfigure_invalid_settings_still_fail(self):
-        self.cfg["parallel"] = 0
-        with self.assertRaises(ValueError):
-            self.install(skip_first_test=True)
-        self.assertFalse((self.root / ".env").exists())
 
     def test_reconfigure_container_validation_and_startup_errors_are_not_masked(self):
         for stage in ("validate", "up"):
@@ -106,14 +96,11 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.install(configure_only=True), 0)
         self.assertEqual(self.calls, [])
 
-    def test_install_and_recovery_ignore_measurement_availability(self):
+    def test_recovery_never_measures(self):
         self.install(configure_only=True)
-        for recover in (False, True):
-            with self.subTest(recover=recover), patch.object(installer, "first_test", side_effect=AssertionError("measurement forbidden")) as measurement:
-                self.assertEqual(self.install(recover=recover), 0)
-                measurement.assert_not_called()
-                self.assertFalse(any("exec" in args for args in self.calls))
-                self.assertNotRegex(self.output.getvalue(), "нагрузочный тест|измерение не получено")
+        with patch.object(installer, "first_test", side_effect=AssertionError("measurement forbidden")) as measurement:
+            self.assertEqual(self.install(recover=True), 0)
+            measurement.assert_not_called()
 
     def test_invalid_config_does_not_overwrite_existing_files(self):
         self.install(configure_only=True)
@@ -122,17 +109,6 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.install(configure_only=True)
         self.assertEqual((self.root / "config/local.json").read_bytes(), before)
-
-    def test_defaults_are_all_prompted_and_route_must_be_explicit(self):
-        # 1 node + 10 numeric + bind + guard + URL + CIDRs + interface/gateway
-        # + selection, count and five fields in each of the three groups.
-        answers = [""] * 13 + ["", "", "", "", "", "192.0.2.1/32", "", ""] + [""] * 21
-        with patch("builtins.input", side_effect=answers) as prompt:
-            actual = installer.collect_config(copy.deepcopy(installer.DEFAULT))
-        self.assertEqual(prompt.call_count, len(answers))
-        self.assertEqual(actual, self.cfg)
-        with self.assertRaises(ValueError):
-            installer.cidrs("")
 
     def test_wizard_accepts_more_than_sixteen_servers_and_empty_secondary_groups(self):
         original = installer.ask

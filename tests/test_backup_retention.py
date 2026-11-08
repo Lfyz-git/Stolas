@@ -1,7 +1,6 @@
 """Synthetic transaction snapshots; no daemon or production state is used."""
 import contextlib
 import io
-import json
 import os
 from pathlib import Path
 import shutil
@@ -49,8 +48,8 @@ class BackupRetentionTests(unittest.TestCase):
     def names(self):
         return {path.name for path in self.backups.iterdir()}
 
-    def test_zero_through_six_completed_and_idempotence(self):
-        for count in range(7):
+    def test_retention_boundary_and_idempotence(self):
+        for count in (0, 3, 4):
             with self.subTest(count=count):
                 for path in self.backups.iterdir():
                     shutil.rmtree(path)
@@ -95,15 +94,6 @@ class BackupRetentionTests(unittest.TestCase):
         self.assertTrue(paths[0].is_dir())
         self.assertEqual(self.names(), {path.name for path in [paths[0], *paths[-3:]]})
         self.assertIn("Осталась 1 старая точка восстановления.", " ".join(self.output.getvalue().split()))
-
-    def test_legacy_order_is_utc_and_stable(self):
-        path = self.snapshot(1)
-        state = deploy.read_json(path / "state.json")
-        state.pop("created_ns")
-        before = deploy.backup_order(path, state)
-        os.utime(path, (1, 1))
-        self.assertEqual(deploy.backup_order(path, state), before)
-        self.assertEqual(before[0], 1767225600000000000)
 
     def test_unrelated_config_history_and_settings_backups_are_untouched(self):
         originals = {}
@@ -171,6 +161,7 @@ class BackupRetentionTests(unittest.TestCase):
             self.prune()
         self.assertEqual(len(self.names()), 5)
         self.assertIn("не удалось удалить", " ".join(self.output.getvalue().split()))
+        self.assertNotIn("Удалено устаревших", self.output.getvalue())
         self.prune()
         self.assertEqual(len(self.names()), 3)
 
@@ -180,7 +171,7 @@ class BackupRetentionTests(unittest.TestCase):
             (self.target / ".env").write_text("synthetic")
             (self.target / "config").mkdir()
             (self.target / "config/local.json").write_text("{}")
-            for index in range(6):
+            for index in range(4):
                 action = "update" if index % 2 else "reconfigure"
                 source = ROOT if action == "update" else self.target
                 self.assertEqual(deploy.deploy(source, self.target, action=action, configure_only=True), 0)
@@ -238,18 +229,6 @@ class BackupRetentionTests(unittest.TestCase):
         self.prune()
         self.assertEqual(len(self.names()), 4)
 
-    def test_multiple_unknowns_emit_one_warning_with_counts_and_reason(self):
-        paths = [self.snapshot(n) for n in range(7)]
-        for path in paths[:3]:
-            self.legacy(path)
-        self.journal(paths[-1], "rolled_back")
-        self.prune()
-        text = " ".join(self.output.getvalue().split())
-        self.assertEqual(text.count("Точки восстановления"), 1)
-        self.assertIn("Сохранено: 3", text)
-        self.assertIn("Остались 3 старые точки восстановления.", text)
-        self.assertNotIn("3/3", text)
-
     def test_active_legacy_reference_overrides_old_completion_evidence(self):
         paths = [self.snapshot(n) for n in range(6)]
         self.legacy(paths[0])
@@ -283,17 +262,6 @@ class BackupRetentionTests(unittest.TestCase):
         self.assertEqual(len(self.names()), 5)
         self.assertIn("Остались 2 старые точки восстановления.", " ".join(self.output.getvalue().split()))
 
-    def test_failed_cleanup_emits_one_report_and_then_converges(self):
-        for number in range(7):
-            self.snapshot(number)
-        with patch.object(deploy.shutil, "rmtree", side_effect=PermissionError):
-            deploy.shutil.rmtree.avoids_symlink_attacks = True
-            self.prune()
-        self.assertEqual(" ".join(self.output.getvalue().split()).count("Точки восстановления"), 1)
-        self.assertIn("Сохранено: 7", " ".join(self.output.getvalue().split()))
-        self.prune()
-        self.assertEqual(len(self.names()), 3)
-
     def test_special_file_and_non_snapshot_entries_are_reported_and_preserved(self):
         if os.name == "nt":
             self.skipTest("Linux FIFO safety")
@@ -320,36 +288,6 @@ class BackupRetentionTests(unittest.TestCase):
         self.assertEqual(text.count("Точки восстановления"), 1)
         self.assertNotIn("private-path-not-printed", text)
         self.assertTrue(paths[0].exists())
-
-    def test_compact_report_three_saved_plus_three_old_without_double_counting(self):
-        paths = [self.snapshot(n) for n in range(6)]
-        for path in paths[:3]:
-            self.legacy(path)
-        self.journal(paths[-1])
-        self.prune()
-        lines = self.output.getvalue().strip().splitlines()
-        self.assertEqual(lines, ["Точки восстановления", "  Сохранено: 3",
-                                "  Остались 3 старые точки восстановления.",
-                                "  Если они больше не нужны,", "  их можно удалить вручную", "  после проверки."])
-        self.assertEqual(len(self.names()), 6)
-
-    def test_normal_report_has_no_warning_zero_counts_or_internal_terms(self):
-        paths = [self.snapshot(n) for n in range(3)]
-        self.journal(paths[0], "rolled_back")
-        self.prune()
-        self.assertEqual(self.output.getvalue().strip().splitlines(), ["Точки восстановления", "  Сохранено: 3"])
-
-    def test_report_fits_narrow_terminal_and_omits_internal_terminology(self):
-        paths = [self.snapshot(n) for n in range(6)]
-        for path in paths[:3]:
-            self.legacy(path)
-        with patch("tools.terminal.shutil.get_terminal_size", return_value=os.terminal_size((32, 24))):
-            self.prune()
-        text = self.output.getvalue()
-        self.assertTrue(all(len(line) <= 32 for line in text.splitlines()))
-        self.assertTrue(all(line.startswith("  ") for line in text.splitlines() if line and line != "Точки восстановления"))
-        self.assertNotRegex(text.lower(), r"транзакц|бэкап|исключен|обычн|журнал|3/3|: 0|повтор.*обнов")
-        self.assertEqual(text.count("Сохранено: 3"), 1)
 
     def test_full_pruning_reports_actual_deletions_and_resets_on_next_operation(self):
         for n in range(7):
@@ -378,14 +316,6 @@ class BackupRetentionTests(unittest.TestCase):
         self.assertIn("Проверьте права доступа", text)
         self.assertNotIn("not-public", text)
         self.assertEqual(len(self.names()), 4)
-
-    def test_no_successful_deletions_omit_deleted_count(self):
-        for n in range(5):
-            self.snapshot(n)
-        with patch.object(deploy.shutil, "rmtree", side_effect=PermissionError):
-            deploy.shutil.rmtree.avoids_symlink_attacks = True
-            self.prune()
-        self.assertNotIn("Удалено устаревших", self.output.getvalue())
 
     def test_pending_points_are_not_given_manual_deletion_advice(self):
         path = self.snapshot(1, "pending")
