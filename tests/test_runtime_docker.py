@@ -71,13 +71,19 @@ class RuntimeDockerTests(unittest.TestCase):
         result = subprocess.run(args, input="apply\nlater\n", text=True, capture_output=True, env=install.clean_env(), timeout=240)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         if not configure_only:
-            self.assertIn("API отвечает, авторизация проверена", result.stdout)
+            self.assert_api_ready(target)
         self.assertNotIn("Тест скорости (", result.stdout)
         self.owned_images.add("stolas:" + resources.core_version(target))
         env = resources.read_env(target)
         if env.get("STOLAS_DATA_VOLUME"):
             self.owned_volumes.add(env["STOLAS_DATA_VOLUME"])
         return result.returncode
+
+    def assert_api_ready(self, target):
+        env = resources.read_env(target)
+        response = install.request_json("http://127.0.0.1:" + env["STOLAS_PORT"],
+                                        "/healthz", env["STOLAS_API_TOKEN"])
+        self.assertEqual(response, {"status": "ready"})
 
     def api_latest(self, token=None):
         env = resources.read_env(self.root)
@@ -231,8 +237,7 @@ class RuntimeDockerTests(unittest.TestCase):
             install.save_draft(self.root, {"config": cfg, "api": install.read_api(self.root), "completed": []})
             result = cli("configure", answer="resume\napply\nlater\n")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("API отвечает, авторизация проверена", result.stdout)
-            self.assertIn("Stolas Core запущен", result.stdout)
+            self.assert_api_ready(self.root)
             self.assertNotIn("Тест скорости (", result.stdout)
             self.assertEqual(install.validated(self.root / "config/local.json")["node"], node)
             self.assertEqual(deploy.read_json(self.root / ".stolas/state/transaction.json")["phase"], "complete")

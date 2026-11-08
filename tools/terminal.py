@@ -13,7 +13,7 @@ class Terminal:
 
     @property
     def width(self):
-        return max(32, min(80, shutil.get_terminal_size((80, 24)).columns))
+        return max(12, min(80, shutil.get_terminal_size((80, 24)).columns))
 
     def style(self, value, kind):
         enabled = self.stream.isatty() and "NO_COLOR" not in os.environ and os.getenv("TERM", "") not in ("", "dumb")
@@ -34,6 +34,25 @@ class Terminal:
             self.line(f"Шаг {step} из 4", "heading")
         self.line("─" * self.width, "heading")
         self.line()
+
+    def question(self, label, help_text="", options=()):
+        """Render a separate question block in every wizard, with or without ANSI."""
+        self.line()
+        if help_text:
+            self.line(help_text)
+        self.line(label)
+        if options:
+            self.line()
+            for index, option in enumerate(options, 1):
+                self.line(f"  {index}. {option}")
+            self.line()
+
+    def prompt(self, default="", secret=False):
+        suffix = f" [{default}]" if default != "" and not secret else ""
+        if len(suffix) + 8 > self.width:
+            self.line("По умолчанию: " + str(default))
+            suffix = " [Enter]" if self.width >= 15 else ""
+        return self.style("Ввод" + suffix + ": ", "prompt")
 
     def result(self, value, kind="success"):
         self.line(("Ошибка: " if kind == "error" else "Внимание: " if kind == "warning" else "Готово: ") + value, kind)

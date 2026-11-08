@@ -55,7 +55,7 @@ class IntegrationTests(unittest.TestCase):
 
     def test_existing_credentials_are_reused_without_creating_or_reading_secrets(self):
         self.assertTrue(self.connect())
-        self.assertIn("Credential доступа к Stolas — номер варианта", self.output.getvalue())
+        self.assertIn("Credential доступа к Stolas", self.output.getvalue())
         posts = [(p, b) for p, b in self.calls if b]
         self.assertEqual([p for p, b in posts], ["/workflows"])
         payload = posts[0][1]
@@ -81,7 +81,7 @@ class IntegrationTests(unittest.TestCase):
     def test_owned_header_id_can_be_reused_without_selection(self):
         (self.root / "n8n/install-state.json").write_text(json.dumps({"url": self.options["url"], "credentials": [{"id": "api", "type": "httpHeaderAuth"}]}))
         self.assertTrue(self.connect(("connect",)))
-        self.assertNotIn("Credential доступа к Stolas — номер варианта", self.output.getvalue())
+        self.assertNotIn("\nCredential доступа к Stolas\n", self.output.getvalue())
 
     def test_missing_credentials_exports_and_does_not_post(self):
         self.items = []
