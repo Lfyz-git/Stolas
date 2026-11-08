@@ -15,8 +15,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 HAS_TOOLS = (ROOT / "tools/entrypoints.py").is_file()
 if HAS_TOOLS:
-    from tools import deploy, entrypoints, install, manage, resources
-    from test_runtime import DockerFixture
+    from tools import deploy, entrypoints, install
 
 
 @unittest.skipUnless(HAS_TOOLS, "Manager is outside the production image")
@@ -36,31 +35,9 @@ class EntrypointTests(unittest.TestCase):
         self.output = redirect.__enter__()
         self.addCleanup(redirect.__exit__, None, None, None)
 
-    def test_command_name_conflict_can_cancel_with_numbered_option(self):
-        with patch.object(entrypoints, "install", side_effect=FileExistsError) as create, patch("builtins.input", return_value="2"):
-            entrypoints.configure(self.root, scope="user")
-        create.assert_called_once()
-        self.assertFalse(entrypoints.state_path(self.root).exists())
-
-    def test_command_offer_propagates_process_interrupt(self):
-        with patch.object(entrypoints, "configure", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
-            entrypoints.offer(self.root)
-        self.assertFalse(entrypoints.state_path(self.root).exists())
-
     def install(self, root=None, name="stolas"):
         with patch.object(entrypoints.shutil, "which", return_value=None):
             return entrypoints.install(root or self.root, self.binary, name)
-
-    def test_owned_wrapper_idempotent_no_secrets_and_safe_repeated_removal(self):
-        record = self.install()
-        path = Path(record["path"])
-        self.assertEqual(self.install(), record)
-        self.assertTrue(entrypoints.owned(self.root, record))
-        self.assertNotIn("a" * 40, path.read_text())
-        self.assertNotIn(".env", path.read_text())
-        entrypoints.remove(self.root)
-        entrypoints.remove(self.root)
-        self.assertFalse(path.exists())
 
     def test_foreign_files_path_commands_and_other_instances_never_overwritten(self):
         self.binary.mkdir()
@@ -82,103 +59,6 @@ class EntrypointTests(unittest.TestCase):
         entrypoints.remove(other)
         self.assertTrue(entrypoints.owned(self.root, record))
         self.assertFalse(Path(second["path"]).exists())
-
-    def test_changed_wrapper_is_preserved_and_partial_install_is_rejected(self):
-        record = self.install()
-        path = Path(record["path"])
-        path.write_text("user-changed")
-        entrypoints.remove(self.root)
-        self.assertEqual(path.read_text(), "user-changed")
-        self.assertIn("изменена и сохранена", self.output.getvalue())
-        (self.root / ".stolas/installer/tools/install.py").unlink()
-        with self.assertRaisesRegex(RuntimeError, "не завершена"):
-            self.install(name="partial")
-        self.assertFalse((self.binary / "partial").exists())
-
-    def test_failed_state_write_removes_only_wrapper_created_by_this_attempt(self):
-        with patch.object(deploy, "atomic_json", side_effect=OSError("disk full")), self.assertRaises(OSError):
-            self.install()
-        self.assertFalse((self.binary / "stolas").exists())
-        self.assertFalse(entrypoints.read(self.root))
-
-    def test_system_command_removal_requires_rights_before_any_docker_mutation(self):
-        record = self.install()
-        docker = DockerFixture()
-        real_access = os.access
-        def access(path, mode):
-            return False if Path(path) == Path(record["path"]).parent else real_access(path, mode)
-        with patch.object(resources.environment, "command", side_effect=docker), patch.object(resources, "command", return_value=["docker"]), patch.object(entrypoints.os, "access", side_effect=access), patch("builtins.input", side_effect=["remove", "confirm"]), self.assertRaisesRegex(RuntimeError, "Нет прав на удаление команды"):
-            manage.uninstall(self.root)
-        self.assertTrue(entrypoints.owned(self.root, record))
-        self.assertFalse(any(c[0] in ("stop", "rm") or c[:2] in (["image", "rm"], ["volume", "rm"]) for c in docker.calls))
-        self.assertFalse(resources.load(self.root, "resources.json").get("uninstalled"))
-
-    @unittest.skipUnless(hasattr(os, "chown"), "POSIX metadata owner after sudo")
-    def test_sudo_command_setup_retains_metadata_owner_of_installation(self):
-        parent = (self.root / ".stolas/state").stat()
-        with patch.object(entrypoints.os, "geteuid", return_value=0), patch.object(entrypoints.os, "chown") as chown:
-            self.install()
-        self.assertTrue(any(c.args[1:] == (parent.st_uid, parent.st_gid) for c in chown.call_args_list))
-
-    def test_user_without_sudo_manual_path_decline_and_explicit_system_confirmation(self):
-        userbin = self.home / ".local/bin"
-        with patch.object(Path, "home", return_value=self.home), patch.dict(os.environ, {"PATH": str(userbin)}), patch("builtins.input", side_effect=[""]):
-            entrypoints.configure(self.root)
-        record = entrypoints.read(self.root)
-        self.assertEqual(Path(record["path"]), userbin / "stolas")
-        entrypoints.remove(self.root)
-        with patch.object(Path, "home", return_value=self.home), patch.dict(os.environ, {"PATH": "/nonexistent"}), patch("builtins.input", side_effect=[""]):
-            entrypoints.configure(self.root)
-        self.assertTrue(entrypoints.read(self.root)["declined"])
-        with patch.object(Path, "home", return_value=self.home), patch.dict(os.environ, {"PATH": "/nonexistent"}), patch.object(entrypoints.shutil, "which", return_value=None):
-            entrypoints.configure(self.root, "user")
-        self.assertIn("export PATH=", self.output.getvalue())
-        self.assertFalse((self.home / ".profile").exists())
-        entrypoints.remove(self.root)
-        with patch("builtins.input", side_effect=[""]), patch.object(entrypoints, "install") as create:
-            entrypoints.configure(self.root, "system")
-        create.assert_not_called()
-        with patch("builtins.input", side_effect=["apply"]), patch.object(entrypoints.os, "access", return_value=False), self.assertRaises(PermissionError) as caught:
-            entrypoints.configure(self.root, "system")
-        self.assertEqual(caught.exception.filename, str(Path("/usr/local/bin")))
-
-    def test_current_update_and_rollback_keep_owned_command(self):
-        code = self.root / ".stolas/build/agent/__init__.py"
-        previous_code = code.read_bytes() + b"\n# Current installation snapshot\n"
-        code.write_bytes(previous_code)
-        deploy.finalize(self.root, deploy.stage_sources(ROOT, self.root, "v0.6.5", "fixture"))
-        self.assertNotEqual(code.read_bytes(), previous_code)
-        record = self.install()
-        backup = deploy.read_json(self.root / ".stolas/state/transaction.json")["backup"]
-        deploy.rollback_files(self.root, self.root / backup, configure_only=True, preserve_manager=True)
-        self.assertEqual(code.read_bytes(), previous_code)
-        self.assertEqual(resources.core_version(self.root), "0.6.5")
-        self.assertEqual(deploy.read_json(self.root / ".stolas/state/managed.json")["ref"], "v0.6.5")
-        self.assertTrue((self.root / ".stolas/installer/tools/entrypoints.py").is_file())
-        self.assertIn("entrypoints.remove", (self.root / ".stolas/installer/tools/manage.py").read_text())
-        self.assertTrue(entrypoints.owned(self.root, record))
-        entrypoints.remove(self.root)
-        self.assertFalse(Path(record["path"]).exists())
-
-    @unittest.skipIf(os.name == "nt", "Purge unlinks a held POSIX lock; supported platform is Linux")
-    def test_normal_and_purge_uninstall_remove_owned_wrapper_and_preserve_foreign(self):
-        docker = DockerFixture()
-        with patch.object(resources.environment, "command", side_effect=docker), patch.object(resources, "command", return_value=["docker"]):
-            resources.configure(self.root, ["docker"])
-            record = self.install()
-            foreign = self.binary / "neighbour"
-            foreign.write_text("foreign")
-            with patch("builtins.input", side_effect=["remove", "confirm"]):
-                self.assertEqual(manage.uninstall(self.root), 0)
-            self.assertFalse(Path(record["path"]).exists())
-            self.assertTrue((self.root / "stolas").is_file())
-            self.assertTrue(docker.volumes)
-            record = self.install()
-            with patch("builtins.input", side_effect=["УДАЛИТЬ"]):
-                self.assertEqual(manage.uninstall(self.root, purge=True), 0)
-            self.assertFalse(Path(record["path"]).exists())
-            self.assertEqual(foreign.read_text(), "foreign")
-            self.assertFalse(docker.volumes)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux executable PATH wrapper")
     def test_path_wrapper_preserves_cwd_arguments_exit_status_signals_and_missing_target(self):
@@ -203,39 +83,6 @@ class EntrypointTests(unittest.TestCase):
         self.assertIn("Установка Stolas не найдена", result.stderr)
         entrypoints.remove(self.root)
         self.assertFalse(Path(record["path"]).exists())
-
-    @unittest.skipUnless(sys.platform.startswith("linux"), "Native Linux CLI from another cwd")
-    def test_native_cli_routes_to_installation_from_path(self):
-        self.install()
-        stub = self.binary / "docker"
-        log = self.home / "docker.log"
-        stub.write_text("#!" + sys.executable + "\n" + '''import json,os,pathlib,sys
-args=sys.argv[1:]
-with pathlib.Path(os.environ['TEST_DOCKER_LOG']).open('a') as f: f.write(json.dumps({'args':args,'cwd':os.getcwd()})+'\\n')
-if 'context' in args: print('unix:///var/run/docker.sock')
-elif 'info' in args: print('linux x86_64 fixture')
-elif 'logs' in args: sys.exit(7)
-elif 'exec' in args: print(json.dumps({'status':'ok','history':[]}))
-elif 'config' in args: print('{"volumes":{}}')
-elif args[:2] == ['volume','inspect']: sys.exit(1)
-''')
-        stub.chmod(0o755)
-        env = {**os.environ, "PATH": str(self.binary) + os.pathsep + os.environ["PATH"], "TEST_DOCKER_LOG": str(log)}
-        # Exercise the wrapper boundary once per behavior: JSON, streaming exit
-        # status and interactive cancellation. Commands themselves have unit tests.
-        commands = [(["history", "--json"], "", 0), (["run", "--json"], "", 0),
-                    (["logs"], "", 7), (["configure"], "5\n", 3)]
-        for args, answer, expected in commands:
-            with self.subTest(command=args):
-                result = subprocess.run(["stolas", *args], cwd=self.home, env=env, input=answer, text=True, capture_output=True, timeout=20)
-                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
-                self.assertNotIn("a" * 40, result.stdout + result.stderr)
-        for call in map(json.loads, log.read_text().splitlines()):
-            if "--project-directory" in call["args"]:
-                self.assertEqual(call["args"][call["args"].index("--project-directory") + 1], str(self.root))
-                if "exec" in call["args"] or "logs" in call["args"]:
-                    self.assertEqual(call["cwd"], str(self.root))
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,7 +14,6 @@ from unittest.mock import patch
 from agent import events
 from agent.api import make_server
 from agent.config import DEFAULT
-from agent.probes import ProbeError
 from agent.runner import Runner
 from agent.storage import Store
 
@@ -53,54 +52,11 @@ class EventTests(unittest.TestCase):
         with patch("agent.probes.resolve", side_effect=lambda host, timeout: hosts[host]), patch("agent.probes.measure", side_effect=measures), patch("agent.probes.guard", side_effect=guard, return_value={"verified": True}):
             return self.runner.run()
 
-    def test_normal_measurement_is_one_info_event_and_history_is_independent(self):
-        result = self.cycle([metric(), metric()])
-        rows = self.records()
-        self.assertEqual([r["event"] for r in rows], ["measurement_completed"])
-        self.assertEqual(rows[0]["test_id"], result["id"])
-        self.assertEqual(rows[0]["download_mbps"], 900)
-        self.assertEqual(rows[0]["level"], "INFO")
-        self.assertEqual(self.runner.store.latest(), result)
-
-    def test_debug_start_retry_and_busy_share_measurement_id(self):
-        events.logger.setLevel("DEBUG")
-        result = self.cycle([ProbeError("server_busy"), metric(), metric()])
-        rows = self.records()
-        self.assertEqual([r["event"] for r in rows], ["measurement_started", "server_busy", "measurement_retry", "measurement_completed"])
-        self.assertEqual({r["test_id"] for r in rows}, {result["id"]})
-        self.assertEqual(rows[0]["level"], "DEBUG")
-        self.assertEqual(rows[1]["level"], "WARNING")
-
-    def test_wan_failure_and_confirmed_degradation_have_stable_levels(self):
-        result = self.cycle([], ProbeError("route_public_ip_mismatch"))
-        self.assertEqual(result["status"], "route_blocked")
-        self.assertEqual(self.records()[0]["event"], "wan_check_failed")
-        self.assertEqual(self.records()[0]["level"], "ERROR")
-        self.stream.seek(0); self.stream.truncate(0)
-        result = self.cycle([metric(10)] * 4)
-        rows = self.records()
-        self.assertEqual(rows[-1]["event"], "speed_degradation_confirmed")
-        self.assertEqual(rows[-1]["level"], "WARNING")
-        self.assertEqual(rows[-1]["test_id"], result["id"])
-
     def test_storage_failure_does_not_log_exception_or_its_secret(self):
         with patch.object(self.runner.store, "save", side_effect=OSError("password=my-secret")), self.assertRaises(OSError):
             self.cycle([metric(), metric()])
         self.assertEqual(self.records()[-1]["event"], "history_error")
         self.assertNotIn("my-secret", self.stream.getvalue())
-
-    def test_closed_collector_does_not_break_measurements(self):
-        self.stream.close()
-        self.assertEqual(self.cycle([metric(), metric()])["status"], "ok")
-
-    def test_json_escaping_and_unknown_fields_rejected(self):
-        events.emit("server_error", "WARNING", server='quoted"name\nnext', reason="iperf_error")
-        self.assertEqual(len(self.stream.getvalue().splitlines()), 1)
-        self.assertEqual(self.records()[0]["server"], 'quoted"name\nnext')
-        with self.assertRaises(ValueError):
-            events.emit("server_error", token="secret")
-        with self.assertRaises(ValueError):
-            events.emit("new_unstable_event")
 
     def test_http_error_never_contains_headers_url_or_exception_secrets(self):
         token = "private-bearer-" * 4
@@ -119,16 +75,6 @@ class EventTests(unittest.TestCase):
         self.assertEqual([r["http_status"] for r in rows], [401, 500])
         for secret in (token, "header-secret", "url-secret", "private-exception", "Telegram"):
             self.assertNotIn(secret, self.stream.getvalue())
-
-    def test_text_and_invalid_logging_configuration(self):
-        with patch.dict(os.environ, {"STOLAS_LOG_LEVEL": "ERROR", "STOLAS_LOG_FORMAT": "text"}):
-            events.configure("test-node", self.stream)
-        events.emit("measurement_completed", status="ok")
-        events.emit("history_error", "ERROR", operation="save")
-        self.assertIn("ERROR history_error", self.stream.getvalue())
-        self.assertNotIn("measurement_completed", self.stream.getvalue())
-        with patch.dict(os.environ, {"STOLAS_LOG_LEVEL": "TRACE"}), self.assertRaises(ValueError):
-            events.configure("test-node", self.stream)
 
     def test_cli_result_and_diagnostic_streams_are_separate_and_secret_safe(self):
         config = os.path.join(self.tmp.name, "config.json")

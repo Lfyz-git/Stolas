@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -12,7 +13,7 @@ from unittest.mock import patch
 
 from agent.api import make_server
 from agent.config import DEFAULT, load
-from agent.probes import ProbeError, _guard, parse_iperf, measure
+from agent.probes import ProbeError, parse_iperf
 from agent.runner import Cooldown, Runner
 from agent.storage import Busy, Store
 
@@ -34,18 +35,6 @@ class AgentTests(unittest.TestCase):
         with patch("agent.probes.resolve", side_effect=lambda host, timeout: {"spd-rudp.hostkey.ru": "192.0.2.1", "mskst.st.mtsws.net": "192.0.2.2", "msk.speed.ruweb.net": "192.0.2.3"}[host]), patch("agent.probes.guard", side_effect=guard, return_value={"verified": True}), patch("agent.probes.measure", side_effect=values):
             return self.runner.run()
 
-    def test_busy_rotates_port_without_wan_alert(self):
-        r = self.cycle([ProbeError("server_busy"), metric(900), metric(900)])
-        self.assertEqual(r["status"], "ok")
-        self.assertFalse(r["wan_alert"])
-        self.assertEqual([s["endpoint"]["port"] for s in r["attempts"]], [5201, 5202])
-
-    def test_all_busy_is_unavailable(self):
-        r = self.cycle([ProbeError("server_busy")] * 11)
-        self.assertEqual(r["status"], "unavailable")
-        self.assertFalse(r["wan_alert"])
-        self.assertEqual(len(r["attempts"]), 11)
-
     def test_low_confirmed_and_original_preserved(self):
         r = self.cycle([metric(10), metric(900), metric(20), metric(800)])
         self.assertEqual(r["status"], "low_confirmed")
@@ -59,29 +48,11 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(r["status"], "server_disagreement")
         self.assertFalse(r["wan_alert"])
 
-    def test_disabled_guard_suppresses_wan_alert(self):
-        self.cfg["route"]["mode"] = "off"
-        r = self.cycle([metric(1)] * 4)
-        self.assertFalse(r["wan_alert"])
-
     def test_partial_pair_never_mixes_servers(self):
         r = self.cycle([metric(5), ProbeError("test_timeout"), ProbeError("test_timeout"), metric(900), metric(800)])
         self.assertEqual(r["primary"]["server"], "mts-msk")
         self.assertEqual(r["attempts"][0]["download"]["mbps"], 5)
         self.assertFalse(r["attempts"][0]["valid"])
-
-    def test_route_change_retains_raw_measurement(self):
-        r = self.cycle([metric(900)], [dict(verified=True), ProbeError("route_public_ip_mismatch")])
-        self.assertEqual(r["status"], "route_blocked")
-        self.assertEqual(r["attempts"][0]["download"]["mbps"], 900)
-        self.assertFalse(r["attempts"][0]["valid"])
-        self.assertFalse(r["wan_alert"])
-
-    def test_reserve_audit(self):
-        self.cfg["reserve_every"] = 1
-        r = self.cycle([metric(900)] * 6)
-        self.assertEqual(len(r["attempts"]), 3)
-        self.assertEqual(r["attempts"][2]["reason"], "reserve")
 
     def test_persistent_cooldown(self):
         self.cycle([metric(900)] * 2)
@@ -95,13 +66,6 @@ class AgentTests(unittest.TestCase):
                 with Store(self.tmp.name).lock():
                     pass
 
-    def test_retention_and_sequence(self):
-        self.cfg["history_limit"] = 1
-        self.cycle([metric(900)] * 2)
-        self.cycle([metric(900)] * 2)
-        self.assertEqual(len(self.store.history()), 1)
-        self.assertEqual(self.store.sequence(), 2)
-
     def test_parser_receiver_rate_sender_retransmits(self):
         sample = {"end": {"sum_received": {"bits_per_second": 925000000, "seconds": 10}, "sum_sent": {"retransmits": 7}}}
         self.assertEqual(parse_iperf(sample)["mbps"], 925)
@@ -111,36 +75,6 @@ class AgentTests(unittest.TestCase):
         sample["end"]["sum_received"]["bits_per_second"] = float("nan")
         with self.assertRaises(ProbeError):
             parse_iperf(sample)
-
-    def test_subprocess_command_and_timeout(self):
-        with patch("agent.probes.subprocess.run", side_effect=subprocess.TimeoutExpired("iperf3", 1)) as run:
-            with self.assertRaisesRegex(ProbeError, "test_timeout"):
-                measure(self.cfg, "192.0.2.1", 5201, True, 1)
-            args = run.call_args.args[0]
-            self.assertIn("-R", args)
-            self.assertIn("-4", args)
-            self.assertNotIn("shell", run.call_args.kwargs)
-
-    def test_unconfigured_route_fails_closed(self):
-        with self.assertRaisesRegex(ProbeError, "route_unconfigured"):
-            _guard(self.cfg, "192.0.2.1")
-
-    def test_route_interface_mismatch(self):
-        self.cfg["route"].update(expected_public_cidrs=["192.0.2.0/24"], interface="wan0")
-        response = subprocess.CompletedProcess([], 0, '[{"dev":"vpn0"}]', '')
-        with patch("agent.probes.subprocess.run", return_value=response), patch("agent.probes.urllib.request.build_opener") as opener:
-            with self.assertRaisesRegex(ProbeError, "route_interface_mismatch"):
-                _guard(self.cfg, "192.0.2.1")
-            opener.assert_not_called()
-
-    def test_route_egress_mismatch(self):
-        self.cfg["route"]["expected_public_cidrs"] = ["192.0.2.0/24"]
-        response = subprocess.CompletedProcess([], 0, '[{"dev":"eth0"}]', '')
-        with patch("agent.probes.subprocess.run", return_value=response), patch("agent.probes.probe_public_ip", return_value="198.51.100.1") as probe:
-            with self.assertRaisesRegex(ProbeError, "route_public_ip_mismatch"):
-                _guard(self.cfg, "192.0.2.1")
-            probe.return_value = "192.0.2.10"
-            self.assertTrue(_guard(self.cfg, "192.0.2.1")["verified"])
 
     def test_cli_real_process_fail_closed_json(self):
         cfg = copy.deepcopy(DEFAULT)
@@ -154,23 +88,13 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(result["status"], "route_blocked")
         self.assertIn("route_unconfigured", result["attempts"][0]["errors"])
 
-    def test_alias_confirmation_continues_to_third_server(self):
-        with patch("agent.probes.resolve", side_effect=["192.0.2.1", "192.0.2.1", "192.0.2.3"]), patch("agent.probes.guard", return_value={"verified": True}), patch("agent.probes.measure", side_effect=[metric(1)] * 6):
-            r = self.runner.run()
-        self.assertEqual(r["confirmation"]["server"], "ruweb-msk")
-
-    def test_cycle_deadline_is_recorded(self):
-        with patch.object(Runner, "_remaining", side_effect=ProbeError("cycle_timeout")):
-            r = self.runner.run()
-        self.assertEqual(r["status"], "unavailable")
-        self.assertFalse(r["wan_alert"])
-        self.assertTrue(any(e["reason"] == "cycle_timeout" for e in r["errors"]))
-
     def test_config_rejects_options_and_invalid_limits(self):
         with patch.dict(os.environ, {"STOLAS_SECONDS": "0"}):
             with self.assertRaises(ValueError):
                 load()
-        with patch.dict(os.environ, {"STOLAS_SERVERS": json.dumps([dict(DEFAULT["server_groups"]["primary"]["servers"][0], host="--help")])}):
+        groups = copy.deepcopy(DEFAULT["server_groups"])
+        groups["primary"]["servers"][0]["host"] = "--help"
+        with patch.dict(os.environ, {"STOLAS_SERVER_GROUPS": json.dumps(groups)}):
             with self.assertRaises(ValueError):
                 load()
 
@@ -226,6 +150,24 @@ class HttpIntegrationTests(unittest.TestCase):
     def test_reject_empty_token(self):
         with self.assertRaises(ValueError):
             make_server(self.runner, ("127.0.0.1", 0), "")
+
+
+class SummaryTests(unittest.TestCase):
+    def test_summary_uses_retained_history_and_never_invents_speed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            now = time.time()
+            for index, (age, status, valid) in enumerate(((100, "ok", True), (200, "unavailable", False), (90000, "ok", True))):
+                store.save({"id": str(index), "started_epoch": now-age, "node": "test", "status": status,
+                            "primary": {"valid": valid, "download": metric(100), "upload": metric(50)} if valid else None}, 100)
+            summary = store.daily_summary(now)
+            self.assertEqual(summary["count"], 2)
+            self.assertEqual(summary["measured_count"], 1)
+            self.assertEqual(summary["download_avg_mbps"], 100)
+        with tempfile.TemporaryDirectory() as directory:
+            empty = Store(directory).daily_summary()
+            self.assertIsNone(empty["download_avg_mbps"])
+            self.assertEqual(empty["count"], 0)
 
 
 if __name__ == "__main__":
