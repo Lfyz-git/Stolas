@@ -1,4 +1,5 @@
 import json
+import os
 import pathlib
 import unittest
 
@@ -8,6 +9,15 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless((ROOT / "config" / "apk.lock.json").exists(), "Source artifact checks run outside production image")
 class ArtifactTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("GITHUB_ACTIONS") == "true" or
+                         os.environ.get("STOLAS_APK_INTEGRATION") == "1",
+                         "Live APK preflight runs in GitHub Actions or with STOLAS_APK_INTEGRATION=1")
+    def test_locked_apks_available_and_verified(self):
+        # Existing workflows discover this test before their Docker build step.
+        from tools.lock_apk import check_lock
+        lock = json.loads((ROOT / "config/apk.lock.json").read_text())
+        self.assertEqual(check_lock(ROOT), sum(map(len, lock["architectures"].values())))
+
     def test_lock_consistency(self):
         lock = json.loads((ROOT / "config/apk.lock.json").read_text())
         for arch, packages in lock["architectures"].items():

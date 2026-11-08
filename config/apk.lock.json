@@ -40,15 +40,15 @@
       },
       {
         "name": "ca-certificates",
-        "version": "20260909-r0",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/ca-certificates-20260909-r0.apk",
-        "sha256": "68ee230255f291fcc7539bacd1cc38cb15debda9cff66e57e9ff022a2c38816c"
+        "version": "20261020-r0",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/ca-certificates-20261020-r0.apk",
+        "sha256": "0ff2550833ee3e5ace48fab67147b49f80b77dfe34ab85e5a3ba63b178710d53"
       },
       {
         "name": "ca-certificates-bundle",
-        "version": "20260909-r0",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/ca-certificates-bundle-20260909-r0.apk",
-        "sha256": "31cad7c94ffa88b271c95c91c49af158bd7f31ac85508508ce8b742250e0363c"
+        "version": "20261020-r0",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/ca-certificates-bundle-20261020-r0.apk",
+        "sha256": "a4c5de1bf37652cd98cbe71aec209512ae0508a964961957a6c9650f795e46c4"
       },
       {
         "name": "gdbm",
@@ -100,9 +100,9 @@
       },
       {
         "name": "libexpat",
-        "version": "2.8.5-r0",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/libexpat-2.8.5-r0.apk",
-        "sha256": "5216046085b92da88a6b107dbbb558f69d49c347a6335291fcf199ebd1670a8f"
+        "version": "2.10.0-r0",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/libexpat-2.10.0-r0.apk",
+        "sha256": "3a9ab8d1b66d1b76c6b41d24501ab61057efa3993f7b85cf3ff043b749e06e6e"
       },
       {
         "name": "libffi",
@@ -154,15 +154,15 @@
       },
       {
         "name": "musl",
-        "version": "1.2.5-r23",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/musl-1.2.5-r23.apk",
-        "sha256": "4f3c4a7bf9f51d2c91007e333b17459362ffd881b4a343e8da07b6c50c4f4a0d"
+        "version": "1.2.5-r24",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/musl-1.2.5-r24.apk",
+        "sha256": "d49d703392f1a6d2fe822db1b57e61735063077e1ad846d5f40d79fe507ec727"
       },
       {
         "name": "musl-utils",
-        "version": "1.2.5-r23",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/musl-utils-1.2.5-r23.apk",
-        "sha256": "ce733f22cf98d5812e68174609f2f08cb62ec83037f11b1de2fd58b0b6ba1a1a"
+        "version": "1.2.5-r24",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/musl-utils-1.2.5-r24.apk",
+        "sha256": "ee9a8106067ead36b8930f5ccdb3e515574871ac8e07f88cc7bab7049effc945"
       },
       {
         "name": "ncurses-terminfo-base",
@@ -172,9 +172,9 @@
       },
       {
         "name": "python3",
-        "version": "3.12.15-r0",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/python3-3.12.15-r0.apk",
-        "sha256": "29694494393f3cd4b19297504baafdea612d9b8144bf9bb8fbac0c15dd5e7baf"
+        "version": "3.12.16-r0",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/python3-3.12.16-r0.apk",
+        "sha256": "0f107d0a2179138115b2c41537f381f642c1181d1f004d9e90898adcfb475d57"
       },
       {
         "name": "readline",
@@ -258,15 +258,15 @@
       },
       {
         "name": "ca-certificates",
-        "version": "20260909-r0",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/ca-certificates-20260909-r0.apk",
-        "sha256": "66ed7ee7ef784bc5bd1052d673e6b569496cb5ca42d72f2f0c984b3762e5dfdd"
+        "version": "20261020-r0",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/ca-certificates-20261020-r0.apk",
+        "sha256": "dff46a0de98dff0f3c865752da06ab4524ce40b67c260b4807dc7ed1b1611374"
       },
       {
         "name": "ca-certificates-bundle",
-        "version": "20260909-r0",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/ca-certificates-bundle-20260909-r0.apk",
-        "sha256": "ad418de0031d2de47650002084ab494e0c8f28c386e8744173311b410e56fcf5"
+        "version": "20261020-r0",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/ca-certificates-bundle-20261020-r0.apk",
+        "sha256": "bdf6033710a251d8239f63236eacf40c84afdf8f7b25bb58d69a2c75202350e7"
       },
       {
         "name": "gdbm",
@@ -318,9 +318,9 @@
       },
       {
         "name": "libexpat",
-        "version": "2.8.5-r0",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libexpat-2.8.5-r0.apk",
-        "sha256": "18e5a4f1715dd9fee420d250d14be9e59936352929085939f33da01c3fbde28d"
+        "version": "2.10.0-r0",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/libexpat-2.10.0-r0.apk",
+        "sha256": "f6483389ab602a351891337be7e9975106d0749d57aa5339b0725bb4051e4bc3"
       },
       {
         "name": "libffi",
@@ -372,15 +372,15 @@
       },
       {
         "name": "musl",
-        "version": "1.2.5-r23",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/musl-1.2.5-r23.apk",
-        "sha256": "6a3edd924ead1fad88a69e28c5775809af3026b322f58428001cd02fedc5299e"
+        "version": "1.2.5-r24",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/musl-1.2.5-r24.apk",
+        "sha256": "d7043c549029c98d438e9bc94213b006e5c88540eb58d1f5b0f0d1d56dbf9c98"
       },
       {
         "name": "musl-utils",
-        "version": "1.2.5-r23",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/musl-utils-1.2.5-r23.apk",
-        "sha256": "0d87307c117d4327f4db4ed96b9d403775fe0c1804ae54e7aefcc720f997f573"
+        "version": "1.2.5-r24",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/musl-utils-1.2.5-r24.apk",
+        "sha256": "df4a9a4bb81a76af36779d2c5ef28ac5a1778670788bb4cd152def522904df8f"
       },
       {
         "name": "ncurses-terminfo-base",
@@ -390,9 +390,9 @@
       },
       {
         "name": "python3",
-        "version": "3.12.15-r0",
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/python3-3.12.15-r0.apk",
-        "sha256": "dabc892646c32cc6619afadd30256d1845b1ef34a3f5bebff84895813b55b95b"
+        "version": "3.12.16-r0",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/python3-3.12.16-r0.apk",
+        "sha256": "a4ea335bd189fca31e002e63cb2b9a11679b302934d4c326aa0433948fb65af9"
       },
       {
         "name": "readline",
