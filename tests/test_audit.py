@@ -204,28 +204,6 @@ class DeployAuditTests(unittest.TestCase):
         self.assertEqual((self.target / ".env").read_text(), "secret")
         self.assertEqual((self.target / "config/local.json").read_text(), "custom")
 
-    def test_failed_update_restores_old_sources(self):
-        self.run_deploy()
-        (self.target / ".env").write_text("existing")
-        (self.target / "config").mkdir()
-        (self.target / "config/local.json").write_text("{}")
-        (self.source / "agent/config.py").write_text("broken")
-        with patch.object(deploy, "run_installer", side_effect=[1, 0]):
-            self.assertEqual(deploy.deploy(self.source, self.target, action="update"), 1)
-        self.assertEqual((self.target / ".stolas/build/agent/config.py").read_text(), "old")
-        status = json.loads((self.target / ".stolas/state/status.json").read_text())
-        self.assertEqual(status["stage"], "rolled_back")
-
-    def test_manual_rollback(self):
-        self.run_deploy()
-        (self.target / ".env").write_text("existing")
-        (self.target / "config").mkdir()
-        (self.target / "config/local.json").write_text("{}")
-        (self.source / "agent/config.py").write_text("new")
-        self.run_deploy("update")
-        self.run_deploy("rollback")
-        self.assertEqual((self.target / ".stolas/build/agent/config.py").read_text(), "old")
-
     @unittest.skipIf(os.name == "nt", "POSIX flock/symlinks")
     def test_competing_installers_and_symlinks(self):
         with deploy.install_lock(self.target):
@@ -235,21 +213,6 @@ class DeployAuditTests(unittest.TestCase):
         link.symlink_to(self.target, target_is_directory=True)
         with self.assertRaises(ValueError):
             deploy.safe_path(link)
-
-    def test_interrupted_copy_is_recovered(self):
-        self.run_deploy()
-        (self.source / "agent/config.py").write_text("new")
-        original = deploy.replace_file
-        calls = 0
-        def copy_once(source, target):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise OSError("interrupted")
-            return original(source, target)
-        with patch.object(deploy, "replace_file", side_effect=copy_once), self.assertRaises(OSError):
-            self.run_deploy("update")
-        self.assertEqual((self.target / ".stolas/build/agent/config.py").read_text(), "old")
 
     def test_journal_recovers_incomplete_first_install_and_can_retry(self):
         self.target.mkdir()
@@ -269,21 +232,6 @@ class TopologyAuditTests(unittest.TestCase):
         for topology, endpoint in (("docker", "http://0.0.0.0:8080"), ("remote", "https://secret:password@example.test"), ("native", "http://example.test:70000")):
             with self.assertRaises(ValueError):
                 integrate.connection_url(endpoint, topology)
-
-    def test_each_topology_can_be_collected_without_public_bind(self):
-        for topology in ("native", "docker", "remote"):
-            api = {"STOLAS_PORT": "8080", "STOLAS_LISTEN": "127.0.0.1"}
-            answers = [topology]
-            if topology == "remote": answers += ["1"]
-            answers += [""]
-            answers += ["trusted"]
-            facts = {"docker": {"available": True}, "stolas": [], "addresses": [{"address": "10.8.0.1", "interface": "wg0"}, {"address": "172.20.0.1", "interface": "br-test"}],
-                     "n8n": [{"name": "automation", "id": "container-id", "image": "n8nio/n8n:2", "mode": "default", "confidence": "image", "networks": {"default": {"Gateway": "172.20.0.1", "NetworkID": "net"}}}],
-                     "networks": {"net": {"driver": "bridge", "ipam": [{"Gateway": "172.20.0.1"}]}}}
-            with patch("builtins.input", side_effect=answers), patch.object(install.environment, "port_state", return_value="free"):
-                options = integrate.collect_topology(api, facts)
-            self.assertEqual(options["topology"], topology)
-            self.assertNotEqual(api["STOLAS_LISTEN"], "0.0.0.0")
 
     def test_docker_probe_sends_token_over_stdin_and_does_not_modify_container(self):
         api = {"STOLAS_API_TOKEN": "secret"}

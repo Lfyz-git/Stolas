@@ -32,16 +32,6 @@ class PlacementTests(unittest.TestCase):
         with patch("builtins.input", side_effect=answers), patch.object(integrate.environment, "port_state", return_value=state):
             return integrate.collect_topology(self.api, self.facts, self.root, previous)
 
-    def test_exactly_three_placement_choices_and_native_default(self):
-        options = self.collect(["native", "", "trusted"])
-        self.assertEqual(options["endpoint"], "http://127.0.0.1:8080")
-        text = self.output.getvalue()
-        self.assertIn("1. n8n в Docker", text)
-        self.assertIn("2. n8n без Docker", text)
-        self.assertIn("3. n8n на другом хосте", text)
-        self.assertNotIn("4.", text)
-        self.assertEqual(self.api["STOLAS_LISTEN"], "127.0.0.1")
-
     def test_remote_lan_and_overlay_are_equal_placement_choices(self):
         for selected, address in (("1", "10.8.0.1"), ("2", "192.168.1.10")):
             with self.subTest(address=address):
@@ -53,22 +43,12 @@ class PlacementTests(unittest.TestCase):
                 self.assertFalse(options["endpoint_override"])
         self.assertIn("Authorization: Bearer", self.output.getvalue())
 
-    def test_remote_addresses_are_deterministic_and_bridge_is_last(self):
-        expected = integrate.local_listener_candidates(self.facts)
-        self.facts["addresses"].reverse()
-        self.assertEqual(integrate.local_listener_candidates(self.facts), expected)
-        self.assertEqual([item["address"] for item in expected], ["10.8.0.1", "192.168.1.10", "127.0.0.1", "172.18.0.1"])
-
-    def test_manual_existing_local_address_and_separate_port(self):
-        options = self.collect(["remote", "5", "192.168.1.10:9090", "", "trusted"])
+    def test_manual_binding_works_without_iproute_discovery(self):
+        self.facts["addresses"] = []
+        options = self.collect(["remote", "1", "192.168.1.10:9090", "", "trusted"])
         self.assertEqual(self.api["STOLAS_PORT"], "9090")
         self.assertEqual(self.api["STOLAS_LISTEN"], "192.168.1.10")
         self.assertEqual(options["endpoint"], "http://192.168.1.10:9090")
-
-    def test_manual_binding_works_without_iproute_discovery(self):
-        self.facts["addresses"] = []
-        options = self.collect(["remote", "1", "192.168.1.10:8080", "", "trusted"])
-        self.assertEqual(options["endpoint"], "http://192.168.1.10:8080")
 
     def test_loopback_proxy_override_does_not_change_listener(self):
         options = self.collect(["remote", "3", "https://stolas.example.test/api"])

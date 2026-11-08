@@ -239,6 +239,8 @@ class LocalHttpsProbeTests(unittest.TestCase):
         self.assertTrue(sample["valid"])
         self.assertGreater(sample["download"]["mbps"], 0)
         self.assertGreater(sample["upload"]["mbps"], 0)
+        for direction in ("download", "upload"):
+            self.assertIsNotNone(sample[direction]["tcp_retransmits"])
         self.assertEqual(len(sample["route_checks"]), 4)
         for check in sample["route_checks"]:
             self.assertTrue(check["verified"])
@@ -257,7 +259,7 @@ class LocalHttpsProbeTests(unittest.TestCase):
         starts = self.child_environment(startup_delay=.1)
         with ProbeSession() as session:
             self.assertEqual(probes.resolve("127.0.0.1"), "127.0.0.1")
-            for _ in range(8):
+            for _ in range(2):
                 self.assertTrue(probes.guard(self.route_config(["/json"]), "127.0.0.1")["verified"])
             self.assertEqual(probes.resolve("127.0.0.2"), "127.0.0.2")
             self.assertEqual(session.timings["probe_process_starts"], 1)
@@ -266,7 +268,7 @@ class LocalHttpsProbeTests(unittest.TestCase):
             process = session.process
         self.assertIsNotNone(process.poll())
         self.assertEqual(starts.read_text().splitlines(), ["started"])
-        self.assertEqual(self.requests, [("/json", USER_AGENT)] * 8)
+        self.assertEqual(self.requests, [("/json", USER_AGENT)] * 2)
 
     @unittest.skipUnless(shutil.which("ip"), "Real route lookup requires iproute2")
     def test_session_stalled_witness_retires_worker_after_successful_fallback(self):

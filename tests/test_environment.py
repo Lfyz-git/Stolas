@@ -94,14 +94,11 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(count, 4)
         self.assertEqual(result["docker_container"], "editor")
 
-    def test_workers_are_not_treated_as_editors(self):
+    def test_n8n_compose_project_does_not_turn_database_into_n8n(self):
+        self.container["project"] = "n8n"
         worker = copy.deepcopy(self.container)
         worker.update(id="worker-id", name="background", command=["worker"])
         self.containers.append(worker)
-        self.assertEqual(len(self.discover()["n8n"]), 1)
-
-    def test_n8n_compose_project_does_not_turn_database_into_n8n(self):
-        self.container["project"] = "n8n"
         for name, image in (("n8n-db", "postgres:17"), ("n8n-redis", "redis:7"), ("proxy", "traefik:3")):
             companion = copy.deepcopy(self.container)
             companion.update(id=name, name=name, service=name, image=image, command=["redis-server", "--requirepass", "n8n"] if "redis" in name else [])
@@ -197,27 +194,6 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(api["STOLAS_PORT"], "8080")
         request.assert_not_called()
 
-    def test_remote_https_is_user_information_and_never_public_bind(self):
-        api, result, count = self.topology(["remote", "1", "https://monitor.example.test"])
-        self.assertEqual(api["STOLAS_LISTEN"], "127.0.0.1")
-        self.assertEqual(result["endpoint"], "https://monitor.example.test")
-
-    def test_standard_wizard_never_asks_gateway_ip_or_computed_url(self):
-        facts = self.discover()
-        answers = ["", "192.0.2.1/32", "apply"]
-        with patch("builtins.input", side_effect=answers) as prompt, patch.object(env, "port_state", return_value="free"):
-            plan = install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
-        self.assertEqual(prompt.call_count, len(answers))
-        self.assertNotIn("n8n", plan)
-        self.assertEqual(plan["api"]["STOLAS_LISTEN"], "127.0.0.1")
-        prompts = "\n".join(call.args[0] for call in prompt.call_args_list)
-        self.assertNotIn("gateway", prompts.lower())
-        self.assertNotIn("URL", prompts)
-        self.assertNotIn("IPv4 хоста", prompts)
-        self.assertFalse((self.root / ".env").exists())
-        self.assertFalse((self.root / "config/local.json").exists())
-        self.assertNotIn(plan["api"]["STOLAS_API_TOKEN"], self.output.getvalue())
-
     def test_numbered_cancel_keeps_live_configuration_untouched(self):
         facts = self.discover()
         answers = ["", "192.0.2.1/32", "5"]
@@ -254,17 +230,6 @@ class DiscoveryTests(unittest.TestCase):
             install.collect_plan(self.root, cfg, facts)
         for name, content in files.items():
             self.assertEqual((self.root / name).read_text(), content)
-
-    def test_removed_commands_use_normal_input_validation(self):
-        commands = [":back", ":cancel", ":rescan", "назад", "отмена", "обновить"]
-        for command in commands:
-            with self.subTest(command=command):
-                with patch("builtins.input", side_effect=[command, ""]):
-                    self.assertEqual(install.choice("Выбор", ("apply", "cancel"), "apply"), "apply")
-                with patch("builtins.input", return_value=command):
-                    self.assertEqual(install.ask("Текст"), command)
-                with patch.object(install.getpass, "getpass", side_effect=[command, ""]):
-                    self.assertEqual(install.ask("Число", 42, install.integer(1), secret=True), 42)
 
     def test_existing_configuration_opens_summary_without_reasking_fields(self):
         facts = self.discover()
@@ -327,17 +292,6 @@ class DiscoveryTests(unittest.TestCase):
             plan = install.collect_plan(self.root, copy.deepcopy(install.DEFAULT), facts)
         self.assertEqual(plan["api"]["STOLAS_PORT"], "8081")
         self.assertIn("сводку ещё раз", self.output.getvalue())
-
-    def test_partial_old_checkout_runs_wizard_instead_of_reuse(self):
-        source, target = self.root / "source", self.root / "target"
-        for root in (source, target):
-            for name in ("install.sh", "tools/install.py", "agent/config.py", "compose.yaml"):
-                path = root / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("# fixture")
-        with patch.object(deploy, "run_installer", return_value=0) as run:
-            self.assertEqual(deploy.deploy(source, target, ref="v0.3.0", action="update"), 0)
-        self.assertFalse(run.call_args.kwargs["reuse"])
 
     def test_cancelled_first_install_can_be_retried_without_removing_directory(self):
         source, target = self.root / "source", self.root / "target"

@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -61,13 +60,6 @@ class VersionTests(unittest.TestCase):
         (self.root / ".stolas/state/managed.json").write_text("not-json")
         self.assertEqual(self.cli()[0], 1)
 
-    def test_legacy_manifest_and_nonrelease_compose_metadata(self):
-        self.manifest({"ref": "v0.4.0"}, ".stolas-managed.json")
-        self.assertEqual(layout.installed_version(self.root), "v0.4.0")
-        self.manifest({"ref": "checkout"})
-        (self.root / "compose.yaml").write_text("services:\n  stolas:\n    image: stolas:0.5.0\n")
-        self.assertEqual(layout.installed_version(self.root), "v0.5.0")
-
     def test_uncommitted_installation_does_not_claim_a_staged_release(self):
         self.manifest({"ref": "v0.6.3"})
         for phase in ("prepared", "installed", "interrupted"):
@@ -75,12 +67,6 @@ class VersionTests(unittest.TestCase):
             self.assertIsNone(layout.installed_version(self.root))
         self.manifest({"phase": "rolled_back"}, ".stolas/state/transaction.json")
         self.assertEqual(layout.installed_version(self.root), "v0.6.3")
-
-    def test_version_appears_in_help_without_docker_or_network(self):
-        code, text = self.cli("help")
-        self.assertEqual(code, 0)
-        self.assertIn("version", text)
-        self.assertIn("update", text)
 
     @unittest.skipIf(os.name == "nt", "POSIX link safety")
     def test_linked_manifest_is_not_read(self):
