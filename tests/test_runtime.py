@@ -1,13 +1,11 @@
-"""Migration fixtures and exact ownership checks. Docker execution is opt-in."""
+"""Current installation transactions and exact resource ownership checks."""
 import contextlib
 import copy
-import hashlib
 import io
 import json
 import os
 from pathlib import Path
 import subprocess
-import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -16,40 +14,6 @@ ROOT = Path(__file__).resolve().parents[1]
 HAS_TOOLS = (ROOT / "tools/manage.py").is_file()
 if HAS_TOOLS:
     from tools import deploy, install, layout, manage, resources
-
-
-def frozen_install(root):
-    with tarfile.open(ROOT / "tests/fixtures/v0.4.0.tar.gz") as archive:
-        names = []
-        for member in archive:
-            if member.isfile():
-                name = member.name.split("/", 1)[1]
-                path = root / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(archive.extractfile(member).read())
-                names.append(name)
-    (root / ".stolas-managed.json").write_text(json.dumps({"files": names, "ref": "v0.4.0"}))
-    (root / ".env").write_text("STOLAS_API_TOKEN=" + "a" * 40 + "\nSTOLAS_LISTEN=127.0.0.1\nSTOLAS_PORT=8080\nSTOLAS_PROJECT_NAME=stolas-133eaddd33\n")
-    cfg = copy.deepcopy(install.DEFAULT)
-    cfg["route"]["mode"] = "off"
-    (root / "config/local.json").write_text(json.dumps(cfg))
-    (root / ".stolas-progress.json").write_text(json.dumps({"stage": "complete", "first_status": "route_blocked"}))
-    return root
-
-
-def frozen_runtime(root):
-    """Sanitized v0.5.0 migration sources, retaining the historical manager logic."""
-    with tempfile.TemporaryDirectory() as directory:
-        source = Path(directory)
-        with tarfile.open(ROOT / "tests/fixtures/v0.5.0.tar.gz") as archive:
-            for member in archive:
-                if member.isfile():
-                    name = member.name.split("/", 1)[1]
-                    path = source / name
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(archive.extractfile(member).read())
-        deploy.stage_sources(source, root, "v0.5.0", "frozen")
-    return root
 
 
 class DockerFixture:
@@ -67,11 +31,6 @@ class DockerFixture:
         self.items.append(item)
         self.images[item["image"]] = {"id": item["image_id"], "labels": {"org.stolas.instance": instance} if instance else {}}
         return item
-
-    def legacy(self, root):
-        name = "stolas-133eaddd33_stolas-data"
-        self.volumes[name] = {"name": name, "labels": {"com.docker.compose.project": "stolas-133eaddd33", "com.docker.compose.volume": "stolas-data"}, "created": "fixture-original"}
-        return self.container(root, "stolas-133eaddd33", volume=name, id="old-id", version="0.4.0")
 
     def __call__(self, args, **kwargs):
         args = args[args.index("docker") + 1:]
@@ -218,8 +177,8 @@ class RuntimeTests(unittest.TestCase):
         with patch("builtins.input", side_effect=["1", "1"]):
             self.assertEqual(manage.uninstall(self.root), 0)
 
-    def test_legacy_uninstall_can_restore_a_clean_runtime(self):
-        frozen_install(self.root); self.docker.legacy(self.root)
+    def test_uninstalled_current_runtime_can_be_restored(self):
+        self.runtime(); self.activate()
         with patch("builtins.input", side_effect=["1", "1"]):
             manage.uninstall(self.root)
         with patch.object(deploy, "run_installer", side_effect=lambda *a, **k: (self.activate(), 1)[1]), patch.object(resources, "restart") as restart:
@@ -253,54 +212,71 @@ class RuntimeTests(unittest.TestCase):
             self.assertNotEqual(first[key], other[key])
         self.assertEqual(resources.read_env(old_root), first)
 
-    def test_frozen_v040_migrates_token_config_state_and_exact_volume(self):
-        frozen_install(self.root)
-        old = self.docker.legacy(self.root)
-        token = (self.root / ".env").read_text().splitlines()[0]
+    def test_current_update_preserves_token_config_state_and_exact_volume(self):
+        self.runtime(); self.activate()
+        old = self.docker.items[0]
+        original_env = (self.root / ".env").read_bytes()
         config = (self.root / "config/local.json").read_bytes()
+        progress = self.root / ".stolas/state/progress.json"
+        progress.write_text('{"stage": "complete", "first_status": "route_blocked"}')
         (self.root / "notes.txt").write_text("foreign")
         with patch.object(deploy, "run_installer", side_effect=lambda *a, **k: self.activate()):
             self.assertEqual(deploy.deploy(ROOT, self.root, action="update"), 0)
         self.assertEqual(resources.read_env(self.root)["STOLAS_DATA_VOLUME"], old["mounts"][0]["Name"])
-        self.assertIn(token, (self.root / ".env").read_text())
+        self.assertEqual((self.root / ".env").read_bytes(), original_env)
         self.assertEqual((self.root / "config/local.json").read_bytes(), config)
-        self.assertEqual((self.root / ".stolas/state/progress.json").read_text(), '{"stage": "complete", "first_status": "route_blocked"}')
+        self.assertEqual(progress.read_text(), '{"stage": "complete", "first_status": "route_blocked"}')
         self.assertEqual(len(self.docker.items), 1)
         self.assertEqual(self.docker.items[0]["name"], "/stolas")
-        self.assertFalse((self.root / "tests").exists())
-        self.assertFalse((self.root / ".github").exists())
         self.assertEqual((self.root / "notes.txt").read_text(), "foreign")
+        journal = deploy.read_json(self.root / ".stolas/state/transaction.json")
+        backup = self.root / journal["backup"]
+        self.assertEqual(journal["phase"], "complete")
+        self.assertEqual(deploy.backup_state(self.root, backup)["retention_status"], "complete")
+        self.assertEqual((backup / "files/.env").read_bytes(), original_env)
+        self.assertEqual((backup / "files/config/local.json").read_bytes(), config)
 
-    def test_failed_handover_restores_legacy_files_and_service(self):
-        frozen_install(self.root)
+    def test_failed_update_restores_current_files_and_service(self):
+        self.runtime(); self.activate()
         old_env = (self.root / ".env").read_bytes()
-        self.docker.legacy(self.root)
+        code = self.root / ".stolas/build/agent/__init__.py"
+        original_code = code.read_bytes() + b"\n# Current installation snapshot\n"
+        code.write_bytes(original_code)
+        self.docker.items[0]["id"] = "original-id"
         def fail(*a, **kw):
+            self.assertNotEqual(code.read_bytes(), original_code)
+            install.write_private(self.root / ".env", (self.root / ".env").read_text().replace("8080", "8081"))
             self.activate()
             return 1
         def restart(root, docker):
             self.assertEqual((root / ".env").read_bytes(), old_env)
-            self.docker.legacy(root)
+            self.assertEqual(code.read_bytes(), original_code)
+            env = resources.read_env(root)
+            self.docker.container(root, env["STOLAS_PROJECT_NAME"], env["STOLAS_INSTANCE_ID"], env["STOLAS_DATA_VOLUME"], id="restored-id")
         with patch.object(deploy, "run_installer", side_effect=fail), patch.object(resources, "restart", side_effect=restart) as recovered:
             self.assertEqual(deploy.deploy(ROOT, self.root, action="update"), 1)
         recovered.assert_called_once()
         self.assertEqual((self.root / ".env").read_bytes(), old_env)
-        self.assertTrue((self.root / "tools/install.py").is_file())
-        self.assertEqual(len(self.docker.items), 1)
-        self.assertEqual(self.docker.items[0]["image"], "stolas-133eaddd33:0.4.0")
+        self.assertEqual(code.read_bytes(), original_code)
+        self.assertEqual([c["id"] for c in self.docker.items], ["restored-id"])
+        self.assertEqual(deploy.read_json(self.root / ".stolas/state/transaction.json")["phase"], "rolled_back")
 
-    def test_interrupt_then_retry_recovers_before_migrating(self):
-        frozen_install(self.root); self.docker.legacy(self.root)
+    def test_interrupt_then_retry_recovers_before_current_update(self):
+        self.runtime(); self.activate()
+        self.docker.items[0]["id"] = "original-id"
+        def restart(root, docker):
+            env = resources.read_env(root)
+            self.docker.container(root, env["STOLAS_PROJECT_NAME"], env["STOLAS_INSTANCE_ID"], env["STOLAS_DATA_VOLUME"], id="restored-id")
         with patch.object(deploy, "run_installer", side_effect=lambda *a, **k: (self.activate(), 130)[1]):
             self.assertEqual(deploy.deploy(ROOT, self.root, action="update"), 130)
-        with patch.object(resources, "restart", side_effect=lambda root, docker: self.docker.legacy(root)) as restart, patch.object(deploy, "run_installer", side_effect=lambda *a, **k: self.activate()):
+        with patch.object(resources, "restart", side_effect=restart) as recovered, patch.object(deploy, "run_installer", side_effect=lambda *a, **k: self.activate()):
             self.assertEqual(deploy.deploy(ROOT, self.root, action="update"), 0)
-        restart.assert_called_once()
+        recovered.assert_called_once()
         self.assertEqual(len(self.docker.items), 1)
 
-    def test_migration_copy_failure_does_not_change_legacy(self):
-        frozen_install(self.root)
-        before = (self.root / ".env").read_bytes()
+    def test_copy_failure_does_not_change_current_installation(self):
+        self.runtime()
+        before = {name: (self.root / name).read_bytes() for name in (".env", "config/local.json", ".stolas/build/agent/runner.py", ".stolas/state/managed.json")}
         original = deploy.replace_file
         count = 0
         def fail(source, destination):
@@ -311,8 +287,8 @@ class RuntimeTests(unittest.TestCase):
             return original(source, destination)
         with patch.object(deploy, "replace_file", side_effect=fail), self.assertRaises(OSError):
             deploy.stage_sources(ROOT, self.root, "v0.6.5", "")
-        self.assertEqual((self.root / ".env").read_bytes(), before)
-        self.assertTrue((self.root / "agent/runner.py").is_file())
+        for name, content in before.items():
+            self.assertEqual((self.root / name).read_bytes(), content, name)
 
     def test_uninstall_preserves_history_config_and_offline_command(self):
         self.runtime(); self.activate()
@@ -386,8 +362,9 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             layout.bounded(self.root, ".stolas/user-link/file")
 
-    def test_legacy_uninstall_uses_actual_mount(self):
-        frozen_install(self.root); old = self.docker.legacy(self.root)
+    def test_current_uninstall_uses_actual_mount(self):
+        self.runtime(); self.activate()
+        old = self.docker.items[0]
         name = old["mounts"][0]["Name"]
         with patch("builtins.input", side_effect=["1", "1"]):
             self.assertEqual(manage.uninstall(self.root), 0)

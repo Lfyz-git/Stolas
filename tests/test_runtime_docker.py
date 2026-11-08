@@ -1,4 +1,4 @@
-"""Real Linux Docker: frozen v0.4.0, SQLite, health, rollback and offline purge."""
+"""Real Linux Docker: current installation, SQLite, health, rollback and offline purge."""
 import contextlib
 import io
 import json
@@ -19,10 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 HAS_TOOLS = (ROOT / "tools/manage.py").is_file()
 if HAS_TOOLS:
     from tools import deploy, entrypoints, install, layout, manage, resources
-    from test_runtime import frozen_install, frozen_runtime
 
 
-@unittest.skipUnless(HAS_TOOLS and sys.platform.startswith("linux") and os.getenv("STOLAS_RUNTIME_DOCKER") == "1", "Opt-in real runtime migration on Linux Docker")
+@unittest.skipUnless(HAS_TOOLS and sys.platform.startswith("linux") and os.getenv("STOLAS_RUNTIME_DOCKER") == "1", "Opt-in current runtime transactions on Linux Docker")
 class RuntimeDockerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="stolas-runtime-test-")
@@ -30,8 +29,6 @@ class RuntimeDockerTests(unittest.TestCase):
         self.root = Path(self.tmp.name) / "installation"
         self.root.mkdir()
         self.suffix = uuid.uuid4().hex[:10]
-        self.old_project = "stolas-" + self.suffix
-        self.volume = self.old_project + "_stolas-data"
         self.foreign = "stolas-test-neighbour-" + self.suffix
         self.owned_images = set()
         self.owned_volumes = set()
@@ -82,41 +79,92 @@ class RuntimeDockerTests(unittest.TestCase):
             self.owned_volumes.add(env["STOLAS_DATA_VOLUME"])
         return result.returncode
 
-    def api_latest(self):
+    def api_latest(self, token=None):
         env = resources.read_env(self.root)
-        request = urllib.request.Request("http://127.0.0.1:" + env["STOLAS_PORT"] + "/v1/results/latest", headers={"Authorization": "Bearer " + env["STOLAS_API_TOKEN"]})
+        request = urllib.request.Request("http://127.0.0.1:" + env["STOLAS_PORT"] + "/v1/results/latest", headers={"Authorization": "Bearer " + (token if token is not None else env["STOLAS_API_TOKEN"])})
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=5) as response:
             return json.load(response)
+
+    def running_config(self):
+        result = self.docker("exec", "stolas", "python3", "-c",
+                             "import os; print(open(os.environ['STOLAS_CONFIG']).read())")
+        return json.loads(result.stdout)
 
     def assert_neighbour(self):
         self.assertEqual(self.docker("inspect", "--format", "{{.State.Running}}", self.foreign).stdout.strip(), "true")
 
-    def test_frozen_legacy_migration_failure_rollback_repeat_and_purge(self):
-        frozen_install(self.root)
-        text = (self.root / ".env").read_text().replace("stolas-133eaddd33", self.old_project).replace("STOLAS_PORT=8080", "STOLAS_PORT=" + str(self.port))
-        (self.root / ".env").write_text(text)
-        self.owned_images.add(self.old_project + ":0.4.0")
-        self.owned_volumes.add(self.volume)
-        self.docker("build", "-t", self.old_project + ":0.4.0", str(self.root))
+    def current_installation(self):
+        initial = deploy.stage_sources(ROOT, self.root, "v0.6.5", "fixture")
+        # A distinguishable current snapshot proves that rollback restores files,
+        # even when the candidate is another revision of the same Core version.
+        compose = self.root / "compose.yaml"
+        compose.write_text(compose.read_text() + "\n# Current installation snapshot\n")
+        (self.root / "config").mkdir(exist_ok=True)
+        cfg = json.loads((ROOT / "config/example.json").read_text())
+        cfg["route"]["mode"] = "off"
+        cfg["node"] = "current-installation-fixture"
+        (self.root / "config/local.json").write_text(json.dumps(cfg))
+        (self.root / ".env").write_text("STOLAS_API_TOKEN=" + "b" * 40 + "\nSTOLAS_LISTEN=127.0.0.1\nSTOLAS_PORT=" + str(self.port) + "\n")
+        self.installer(self.root, reuse=True)
+        deploy.finalize(self.root, initial)
+        deploy.mark_backup(initial, "complete")
+        deploy.atomic_json(self.root / ".stolas/state/transaction.json",
+                           {"phase": "complete", "backup": initial.relative_to(self.root).as_posix(), "configured": False})
+
+    def test_current_update_failure_rollback_repeat_and_purge(self):
+        self.current_installation()
+        self.volume = resources.read_env(self.root)["STOLAS_DATA_VOLUME"]
         old_compose = resources.compose(self.root, ["docker"])
-        subprocess.run(old_compose + ["up", "-d", "--wait", "--wait-timeout", "90", "stolas"], cwd=self.root, env=install.clean_env(), capture_output=True, text=True, check=True, timeout=120)
         sample = {"id": "retained-sqlite-row", "started_epoch": 1, "time": "2026-10-10T00:00:00Z", "node": "fixture", "status": "ok", "primary": None, "confirmation": None, "attempts": [], "errors": []}
         seed = "import json,sys; from agent.storage import Store; Store('/data').save(json.load(sys.stdin),100)"
         subprocess.run(old_compose + ["exec", "-T", "stolas", "python3", "-c", seed], input=json.dumps(sample), text=True, env=install.clean_env(), check=True, timeout=15)
         before = resources.volume_info(self.root, ["docker"], self.volume)
-        self.assertEqual(self.api_latest()["id"], sample["id"])
+        self.assertEqual(self.api_latest(), sample)
         original_env = (self.root / ".env").read_bytes()
-        with patch.object(deploy, "run_installer", side_effect=lambda *a, **k: (self.installer(*a, **k), 1)[1]):
+        original_config = (self.root / "config/local.json").read_bytes()
+        original_compose = (self.root / "compose.yaml").read_bytes()
+        old_id = self.docker("inspect", "--format", "{{.Id}}", "stolas").stdout.strip()
+        def fail_after_handover(*args, **kwargs):
+            cfg = json.loads(original_config)
+            cfg["node"] = "failed-candidate-fixture"
+            (self.root / "config/local.json").write_text(json.dumps(cfg))
+            install.write_private(self.root / ".env", (self.root / ".env").read_text().replace("b" * 40, "c" * 40))
+            self.installer(*args, **kwargs)
+            self.assertNotEqual(self.docker("inspect", "--format", "{{.Id}}", "stolas").stdout.strip(), old_id)
+            self.assertNotEqual((self.root / "compose.yaml").read_bytes(), original_compose)
+            self.assertEqual(self.running_config()["node"], "failed-candidate-fixture")
+            self.assertEqual(self.api_latest(), sample)
+            return 1
+        with patch.object(deploy, "run_installer", side_effect=fail_after_handover):
             self.assertEqual(deploy.deploy(ROOT, self.root, action="update"), 1)
         self.assertEqual((self.root / ".env").read_bytes(), original_env)
-        self.assertEqual(self.api_latest()["id"], sample["id"])
+        self.assertEqual((self.root / "config/local.json").read_bytes(), original_config)
+        self.assertEqual((self.root / "compose.yaml").read_bytes(), original_compose)
+        self.assertEqual(self.running_config(), json.loads(original_config))
+        with self.assertRaises(urllib.error.HTTPError) as rejected:
+            self.api_latest(token="c" * 40)
+        self.assertEqual(rejected.exception.code, 401)
+        rejected.exception.close()
+        journal = deploy.read_json(self.root / ".stolas/state/transaction.json")
+        self.assertEqual(journal["phase"], "rolled_back")
+        backup = self.root / journal["backup"]
+        self.assertEqual(deploy.backup_state(self.root, backup)["retention_status"], "rolled_back")
+        for name, content in ((".env", original_env), ("config/local.json", original_config), ("compose.yaml", original_compose)):
+            self.assertEqual((backup / "files" / name).read_bytes(), content)
+        self.assertEqual(self.api_latest(), sample)
         self.assert_neighbour()
         with patch.object(deploy, "run_installer", side_effect=self.installer):
             self.assertEqual(deploy.deploy(ROOT, self.root, action="update"), 0)
+        self.assertEqual((self.root / "config/local.json").read_bytes(), original_config)
+        self.assertEqual((self.root / ".env").read_bytes(), original_env)
+        self.assertEqual((self.root / "compose.yaml").read_bytes(), (ROOT / "compose.yaml").read_bytes())
+        journal = deploy.read_json(self.root / ".stolas/state/transaction.json")
+        self.assertEqual(journal["phase"], "complete")
+        self.assertEqual(deploy.backup_state(self.root, self.root / journal["backup"])["retention_status"], "complete")
         self.assertEqual(resources.read_env(self.root)["STOLAS_PROJECT_NAME"], "stolas")
         self.assertEqual(resources.read_env(self.root)["STOLAS_DATA_VOLUME"], self.volume)
         self.assertEqual(resources.volume_info(self.root, ["docker"], self.volume), before)
-        self.assertEqual(self.api_latest()["id"], sample["id"])
+        self.assertEqual(self.api_latest(), sample)
         self.assertEqual(len([c for c in resources.containers(self.root, ["docker"]) if resources.owned(c, self.root)]), 1)
         self.assertEqual(self.docker("inspect", "--format", "{{.Name}}", "stolas").stdout.strip(), "/stolas")
         for name in ("tests", ".github", "docs", "agent", "tools"):
@@ -177,7 +225,7 @@ class RuntimeDockerTests(unittest.TestCase):
         self.assertEqual(measured.returncode, 0, measured.stdout + measured.stderr)
         sample = json.loads(measured.stdout)
         self.assertEqual(sample["status"], "ok")
-        self.assertEqual(self.api_latest()["id"], sample["id"])
+        self.assertEqual(self.api_latest(), sample)
         def configure(node):
             cfg.update(node=node, min_interval=86400)
             install.save_draft(self.root, {"config": cfg, "api": install.read_api(self.root), "completed": []})
@@ -188,7 +236,7 @@ class RuntimeDockerTests(unittest.TestCase):
             self.assertNotIn("Тест скорости (", result.stdout)
             self.assertEqual(install.validated(self.root / "config/local.json")["node"], node)
             self.assertEqual(deploy.read_json(self.root / ".stolas/state/transaction.json")["phase"], "complete")
-            self.assertEqual(self.api_latest()["id"], sample["id"])
+            self.assertEqual(self.api_latest(), sample)
             self.assertEqual(resources.volume_info(self.root, ["docker"], volume), before)
         configure("cooldown-fixture")
         blocked = cli("run", "--json")
@@ -222,16 +270,12 @@ class RuntimeDockerTests(unittest.TestCase):
         self.assertTrue(json.loads(result.stdout)["docker"]["available"])
         self.assert_neighbour()
 
-    def test_v050_update_path_rollback_history_and_offline_uninstall_purge(self):
-        frozen_runtime(self.root)
-        (self.root / "config").mkdir(exist_ok=True)
-        cfg = json.loads((ROOT / "config/example.json").read_text())
-        cfg["route"]["mode"] = "off"
-        (self.root / "config/local.json").write_text(json.dumps(cfg))
-        token = "b" * 40
-        (self.root / ".env").write_text("STOLAS_API_TOKEN=" + token + "\nSTOLAS_LISTEN=127.0.0.1\nSTOLAS_PORT=" + str(self.port) + "\n")
-        self.installer(self.root, reuse=True)
-        sample = {"id": "v050-path-retained-row", "started_epoch": 1, "time": "2026-10-10T00:00:00Z", "node": "fixture", "status": "ok", "primary": None, "confirmation": None, "attempts": [], "errors": []}
+    def test_current_update_path_rollback_history_and_offline_uninstall_purge(self):
+        self.current_installation()
+        token = resources.read_env(self.root)["STOLAS_API_TOKEN"]
+        original_config = (self.root / "config/local.json").read_bytes()
+        original_compose = (self.root / "compose.yaml").read_bytes()
+        sample = {"id": "current-path-retained-row", "started_epoch": 1, "time": "2026-10-10T00:00:00Z", "node": "fixture", "status": "ok", "primary": None, "confirmation": None, "attempts": [], "errors": []}
         compose = resources.compose(self.root, ["docker"])
         subprocess.run(compose + ["exec", "-T", "stolas", "python3", "-c", "import json,sys; from agent.storage import Store; Store('/data').save(json.load(sys.stdin),100)"], input=json.dumps(sample), text=True, check=True, timeout=15, env=install.clean_env())
         volume = resources.read_env(self.root)["STOLAS_DATA_VOLUME"]
@@ -245,15 +289,18 @@ class RuntimeDockerTests(unittest.TestCase):
         self.owned_images.add("stolas:0.6.5")
         for path in self.root.rglob("*"):
             self.assertEqual(path.stat().st_uid, os.getuid(), str(path))
+        journal = deploy.read_json(self.root / ".stolas/state/transaction.json")
+        previous = self.root / journal["backup"]
+        self.assertEqual(journal["phase"], "complete")
+        self.assertEqual(deploy.backup_state(self.root, previous)["retention_status"], "complete")
+        self.assertEqual((previous / "files/compose.yaml").read_bytes(), original_compose)
+        self.assertNotEqual((self.root / "compose.yaml").read_bytes(), original_compose)
         binary = Path(self.tmp.name) / "commands"
         wrapper = Path(entrypoints.install(self.root, binary)["path"])
         with patch.object(deploy, "run_installer", side_effect=self.installer):
             self.assertEqual(deploy.deploy(ROOT, self.root, ref="v0.6.5", action="update"), 0)
-        # Select the first update's frozen v0.5.0 snapshot after exercising a
-        # repeated update, covering a release without PATH ownership support.
-        backups = sorted((self.root / ".stolas/backups/transactions").iterdir())
-        previous = next(p for p in backups if deploy.read_json(p / "state.json").get("previous_manifest", {}).get("ref") == "v0.5.0")
-        deploy.atomic_json(self.root / ".stolas/state/transaction.json", {"phase": "complete", "backup": previous.relative_to(self.root).as_posix(), "configured": True})
+        # Keep the first update's restore point across a repeated update.
+        self.assertTrue(previous.is_dir())
         env = {**install.clean_env(), "PATH": str(binary) + os.pathsep + os.environ["PATH"]}
         def cli(args, answer=""):
             return subprocess.run(["stolas", *args], cwd=self.tmp.name, env=env, input=answer, text=True, capture_output=True, timeout=150)
@@ -261,21 +308,28 @@ class RuntimeDockerTests(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout), (0, "Stolas Core v0.6.5\n"))
         # Ordinary configure applies and checks the service without a fabricated
         # completed-measurement checkpoint or external speed-test traffic.
-        result = cli(["configure"], "apply\nlater\n")
+        cfg = json.loads(original_config)
+        cfg["node"] = "updated-path-fixture"
+        install.save_draft(self.root, {"config": cfg, "api": install.read_api(self.root), "completed": []})
+        result = cli(["configure"], "resume\napply\nlater\n")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(install.validated(self.root / "config/local.json")["node"], "updated-path-fixture")
         result = cli(["diagnose", "--json"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(any(p["owner_mismatch"] for p in json.loads(result.stdout)["permissions"]["paths"]))
         deploy.atomic_json(self.root / ".stolas/state/transaction.json", {"phase": "complete", "backup": previous.relative_to(self.root).as_posix(), "configured": True})
         result = cli(["rollback"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(resources.core_version(self.root), "0.5.0")
+        self.assertEqual((self.root / "config/local.json").read_bytes(), original_config)
+        self.assertEqual((self.root / "compose.yaml").read_bytes(), original_compose)
+        self.assertEqual(self.running_config(), json.loads(original_config))
+        self.assertEqual(resources.core_version(self.root), "0.6.5")
         result = cli(["version"])
-        self.assertEqual((result.returncode, result.stdout), (0, "Stolas Core v0.5.0\n"))
+        self.assertEqual((result.returncode, result.stdout), (0, "Stolas Core v0.6.5\n"))
         result = cli(["history"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(sample["id"], result.stdout)
-        self.assertEqual(self.api_latest()["id"], sample["id"])
+        self.assertEqual(self.api_latest(), sample)
         self.assertEqual(resources.read_env(self.root)["STOLAS_API_TOKEN"], token)
         self.assertEqual(resources.volume_info(self.root, ["docker"], volume), before)
         result = cli(["uninstall"], "remove\nconfirm\n")
@@ -283,7 +337,6 @@ class RuntimeDockerTests(unittest.TestCase):
         self.assertFalse(wrapper.exists())
         self.assertIsNotNone(resources.volume_info(self.root, ["docker"], volume))
         self.assertIsNone(resources.image_info(self.root, ["docker"], "stolas:0.6.5"))
-        self.assertIsNone(resources.image_info(self.root, ["docker"], "stolas:0.5.0"))
         self.assert_neighbour()
         wrapper = Path(entrypoints.install(self.root, binary)["path"])
         result = cli(["uninstall", "--purge"], "УДАЛИТЬ\n")
