@@ -344,3 +344,129 @@ class RuntimeDockerTests(unittest.TestCase):
         self.assertFalse(wrapper.exists())
         self.assertIsNone(resources.volume_info(self.root, ["docker"], volume))
         self.assert_neighbour()
+
+
+@unittest.skipUnless(HAS_TOOLS and sys.platform.startswith("linux") and os.getenv("STOLAS_RUNTIME_DOCKER") == "1", "Opt-in Docker PID namespace and healthcheck regression")
+class ContainerProcessTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="stolas-process-test-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.root.chmod(0o755)
+        self.name = "stolas-process-test-" + uuid.uuid4().hex[:10]
+        self.addCleanup(lambda: self.docker("rm", "-f", self.name, check=False))
+        self.mode = self.root / "health-mode"
+        self.mode.write_text("healthy")
+        # Delay only the image's real healthcheck, not Core or inspection commands.
+        (self.root / "sitecustomize.py").write_text("""import os,sys,time
+from pathlib import Path
+command = sys.orig_argv[-1]
+if '/healthz' in command:
+    mode = Path('/fixture/health-mode').read_text()
+    if mode == 'timeout':
+        time.sleep(4)
+    elif mode == 'error':
+        os._exit(7)
+if 'worker_main' in command and Path('/fixture/stall-worker').exists():
+    import socket
+    socket.gethostbyname = lambda host: time.sleep(30)
+""")
+        config = json.loads((ROOT / "config/example.json").read_text())
+        config["route"]["mode"] = "off"
+        config.update(min_interval=0, retry_delay=0)
+        config["server_groups"]["primary"]["servers"] = [dict(id="local", host="127.0.0.1", ports=[5201], min_download_mbps=0, min_upload_mbps=0)]
+        for group in ("additional", "emergency"):
+            config["server_groups"][group]["servers"] = []
+        (self.root / "config.json").write_text(json.dumps(config))
+        (self.root / "data").mkdir(mode=0o777)
+        (self.root / "data").chmod(0o777)  # Synthetic data, written by image UID 10001.
+
+    def docker(self, *args, check=True):
+        return subprocess.run(["docker", *args], capture_output=True, text=True, check=check, timeout=30, env=install.clean_env())
+
+    def state(self):
+        return json.loads(self.docker("inspect", self.name).stdout)[0]["State"]
+
+    def wait_for(self, predicate):
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(.1)
+        logs = self.docker("logs", self.name)
+        self.fail("Container did not reach the expected state: " + json.dumps(self.state()) + logs.stdout + logs.stderr)
+
+    def start(self):
+        self.docker("run", "-d", "--name", self.name, "--init=false", "--network", "none", "--read-only", "--tmpfs", "/tmp",
+                    "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                    "--mount", f"type=bind,src={self.root},dst=/fixture,readonly",
+                    "--mount", f"type=bind,src={self.root / 'data'},dst=/data",
+                    "-e", "PYTHONPATH=/fixture", "-e", "STOLAS_CONFIG=/fixture/config.json",
+                    "-e", "STOLAS_API_TOKEN=" + "a" * 40,
+                    "--health-interval", "300ms", "--health-timeout", "2s", "--health-retries", "1", "stolas:ci")
+        self.wait_for(lambda: self.state()["Health"]["Status"] == "healthy")
+
+    def processes(self):
+        script = """import json,pathlib
+rows=[]
+for path in pathlib.Path('/proc').glob('[0-9]*/stat'):
+    try:
+        stat=path.read_text(); fields=stat[stat.rfind(')')+2:].split()
+        rows.append(dict(pid=int(path.parent.name), state=fields[0], ppid=int(fields[1]),
+                         name=stat[stat.find('(')+1:stat.rfind(')')],
+                         probe=b'worker_main' in (path.parent/'cmdline').read_bytes()))
+    except (OSError,ValueError):
+        pass
+print(json.dumps(rows))
+"""
+        return json.loads(self.docker("exec", self.name, "python3", "-c", script).stdout)
+
+    def test_healthcheck_timeouts_and_errors_do_not_accumulate_orphans(self):
+        self.start()
+        self.assertTrue(any(p["pid"] == 1 and p["name"] == "python3" for p in self.processes()))
+        for _ in range(2):
+            for mode in ("error", "timeout"):
+                self.mode.write_text(mode)
+                self.wait_for(lambda: self.state()["Health"]["FailingStreak"] >= 3)
+                self.assertEqual(self.state()["Health"]["Status"], "unhealthy")
+                if mode == "timeout":
+                    self.assertTrue(any("exceeded timeout" in log["Output"] for log in self.state()["Health"]["Log"]))
+                self.mode.write_text("healthy")
+                self.wait_for(lambda: self.state()["Health"]["Status"] == "healthy")
+                # Give any orphan left by the old shell-form check time to exit.
+                time.sleep(4.1)
+                processes = self.processes()
+                children = [p for p in processes if p["ppid"] == 1 or p["state"] == "Z"]
+                self.assertEqual(children, [], "Healthcheck left adopted or zombie processes under Core PID 1")
+                # Core, this inspection, and at most one active healthcheck.
+                self.assertLessEqual(sum(p["name"] == "python3" for p in processes), 3)
+
+    def assert_sigterm(self, active):
+        self.start()
+        sample = dict(id="preserved-before-sigterm", started_epoch=1, status="ok")
+        self.docker("exec", self.name, "python3", "-c",
+                    "from agent.storage import Store; Store('/data').save(" + repr(sample) + ",100)")
+        before = (self.root / "config.json").read_bytes()
+        if active:
+            (self.root / "stall-worker").touch()
+            script = "import urllib.request; r=urllib.request.Request('http://127.0.0.1:8080/v1/tests',method='POST',headers={'Authorization':'Bearer '+ 'a'*40}); urllib.request.build_opener(urllib.request.ProxyHandler({})).open(r,timeout=15).read()"
+            self.docker("exec", "-d", self.name, "python3", "-c", script)
+            self.wait_for(lambda: any(p["ppid"] == 1 and p["probe"] for p in self.processes()))
+        started = time.monotonic()
+        self.docker("stop", "--timeout", "5", self.name)
+        self.assertLess(time.monotonic() - started, 5)
+        state = self.state()
+        self.assertFalse(state["Running"])
+        self.assertEqual(state["ExitCode"], 0)  # Not Docker's SIGKILL fallback (137).
+        logs = self.docker("logs", self.name)
+        self.assertIn('"event":"service_stopped"', (logs.stdout + logs.stderr).replace(" ", ""))
+        self.assertEqual((self.root / "config.json").read_bytes(), before)
+        import sqlite3
+        with sqlite3.connect(f"file:{self.root / 'data/history.sqlite3'}?mode=ro", uri=True) as db:
+            self.assertEqual([json.loads(row[0]) for row in db.execute("SELECT body FROM results")], [sample])
+
+    def test_sigterm_stops_idle_core_cleanly(self):
+        self.assert_sigterm(active=False)
+
+    def test_sigterm_during_a_probe_stops_core_and_preserves_sqlite(self):
+        self.assert_sigterm(active=True)
