@@ -1,15 +1,12 @@
 # Synthetic test fixtures
 
-`v0.4.0.tar.gz` and `v0.5.0.tar.gz` contain sanitized historical source code
-for migration and rollback tests. They are not byte-for-byte release downloads.
-Operational validation notes and old release notes were removed or replaced;
-host names and sample addresses were anonymized, including nested archives.
-Archive ownership and timestamps are normalized. Historical runtime versions
-and migration behavior remain intact. These archives contain no deployment state.
+Runtime update and rollback tests stage the current checkout into temporary
+installations with synthetic settings and tokens. No historical release archives
+are required; migration from 0.4.0 and 0.5.0 is no longer supported.
 
-`tools/legacy-v0.4.0.json` retains the original source-file hashes so the installer
-can recognize files owned by genuine old installations. These hashes are not
-credentials. Sanitized fixtures use an explicit managed-file manifest.
+`tools/legacy-v0.4.0.json` is production managed-file ownership metadata, not a
+test archive. It remains because deployment code uses it to recognize owned
+files; keeping it does not promise support for historical upgrades.
 
 `localhost-test-cert.pem` and `localhost-test-key.pem` are a public, test-only TLS
 pair for an ephemeral loopback HTTPS server. The key is intentionally public;

@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HAS_TOOLS = (ROOT / "tools/entrypoints.py").is_file()
 if HAS_TOOLS:
     from tools import deploy, entrypoints, install, layout, manage, resources
-    from test_runtime import DockerFixture, frozen_install
+    from test_runtime import DockerFixture
 
 
 @unittest.skipUnless(HAS_TOOLS, "Manager is outside the production image")
@@ -142,25 +142,18 @@ class EntrypointTests(unittest.TestCase):
             entrypoints.configure(self.root, "system")
         self.assertEqual(caught.exception.filename, str(Path("/usr/local/bin")))
 
-    def test_update_and_rollback_keep_owned_command_even_to_version_before_path_feature(self):
-        import tarfile
-        old = self.home / "old source"
-        with tarfile.open(ROOT / "tests/fixtures/v0.5.0.tar.gz") as archive:
-            for member in archive:
-                if member.isfile():
-                    path = old / member.name
-                    self.assertNotIn("..", Path(member.name).parts)
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(archive.extractfile(member).read())
-        source = next(old.iterdir())
-        # An installed v0.5.0, not a source checkout masquerading as runtime.
-        deploy.finalize(self.root, deploy.stage_sources(source, self.root, "v0.5.0", "frozen"))
+    def test_current_update_and_rollback_keep_owned_command(self):
+        code = self.root / ".stolas/build/agent/__init__.py"
+        previous_code = code.read_bytes() + b"\n# Current installation snapshot\n"
+        code.write_bytes(previous_code)
         deploy.finalize(self.root, deploy.stage_sources(ROOT, self.root, "v0.6.5", "fixture"))
+        self.assertNotEqual(code.read_bytes(), previous_code)
         record = self.install()
         backup = deploy.read_json(self.root / ".stolas/state/transaction.json")["backup"]
         deploy.rollback_files(self.root, self.root / backup, configure_only=True, preserve_manager=True)
-        self.assertEqual(resources.core_version(self.root), "0.5.0")
-        self.assertEqual(deploy.read_json(self.root / ".stolas/state/managed.json")["ref"], "v0.5.0")
+        self.assertEqual(code.read_bytes(), previous_code)
+        self.assertEqual(resources.core_version(self.root), "0.6.5")
+        self.assertEqual(deploy.read_json(self.root / ".stolas/state/managed.json")["ref"], "v0.6.5")
         self.assertTrue((self.root / ".stolas/installer/tools/entrypoints.py").is_file())
         self.assertIn("entrypoints.remove", (self.root / ".stolas/installer/tools/manage.py").read_text())
         self.assertTrue(entrypoints.owned(self.root, record))
