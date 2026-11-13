@@ -16,18 +16,27 @@ if HAS_TOOLS:
 
 @unittest.skipUnless(HAS_TOOLS, "Integration wizard is not shipped in Core image")
 class TransportTests(unittest.TestCase):
-    def test_both_directions_confirm_http_and_default_to_cancel(self):
-        for service in ("Stolas", "n8n"):
-            for address in ("http://127.0.0.1:8080", "http://service.example.test/path"):
-                with self.subTest(service=service, address=address), contextlib.redirect_stdout(io.StringIO()) as output:
-                    self.assertEqual(integrate.connection_url(address), address)
-                    with patch("builtins.input", return_value=""), self.assertRaises(install.Cancel):
-                        integrate.confirm_http(address, service)
-                    with patch("builtins.input", return_value="trusted"):
-                        self.assertTrue(integrate.confirm_http(address, service))
-                    self.assertIn("Authorization: Bearer" if service == "Stolas" else "X-N8N-API-KEY", output.getvalue())
+    def test_http_consent_is_shared_and_precedes_keys_requests_and_writes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".env").write_text("STOLAS_LISTEN=127.0.0.1\nSTOLAS_PORT=8080\nSTOLAS_API_TOKEN=" + "a" * 40 + "\n")
+            original = (root / ".env").read_bytes()
+            facts = dict(docker={"available": True}, stolas=[], n8n=[], addresses=[], timezone="Etc/UTC")
+            answers = ["native", "123", "", "", "http://n8n.example.test", ""]
+            with contextlib.redirect_stdout(io.StringIO()) as output, patch.object(integrate.environment, "discover", return_value=facts), patch.object(integrate.environment, "port_state", return_value="free"), patch("builtins.input", side_effect=answers), patch("getpass.getpass") as key, patch.object(integrate, "request_json") as request, self.assertRaises(install.Cancel):
+                integrate.integrate(root, "api")
+            key.assert_not_called(); request.assert_not_called()
+            self.assertEqual((root / ".env").read_bytes(), original)
+            self.assertFalse((root / "n8n").exists())
+            self.assertIn("HTTP не шифрует", output.getvalue())
+            self.assertIn("Stolas, n8n", output.getvalue())
+        options = dict(mode="api", endpoint="http://127.0.0.1:8080", url="http://n8n.example.test")
+        with contextlib.redirect_stdout(io.StringIO()), patch("builtins.input", return_value="trusted") as prompt:
+            integrate.confirm_transport(options)
+        prompt.assert_called_once()
         with patch("builtins.input") as prompt:
-            self.assertFalse(integrate.confirm_http("https://service.example.test", "n8n"))
+            integrate.confirm_transport(dict(mode="api", endpoint="https://stolas.example.test", url="https://n8n.example.test"))
         prompt.assert_not_called()
 
     def server(self, tls=False):

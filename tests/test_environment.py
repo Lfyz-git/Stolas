@@ -126,7 +126,7 @@ class DockerNetworkIntegrationTests(unittest.TestCase):
                         listener.bind((choice["address"], 0))
                         port = listener.getsockname()[1]
                     api = dict(STOLAS_API_TOKEN="a" * 40, STOLAS_LISTEN="127.0.0.1", STOLAS_PORT=str(port))
-                    with patch("builtins.input", side_effect=["docker", str(index + 1), "", "trusted"]):
+                    with patch("builtins.input", side_effect=["docker", str(index + 1)]):
                         options = integrate.collect_topology(api, facts, root)
                     integrate.validate_discovered_endpoint(dict(api=api, n8n={**options, "mode": "export"}), facts, root)
                     self.assertEqual(api["STOLAS_LISTEN"], choice["address"])
