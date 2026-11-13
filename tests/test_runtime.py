@@ -20,7 +20,7 @@ class DockerFixture:
     def __init__(self):
         self.items, self.volumes, self.images, self.calls = [], {}, {}, []
 
-    def container(self, root, project, instance=None, volume=None, id=None, version="0.6.5"):
+    def container(self, root, project, instance=None, volume=None, id=None, version="0.6.6"):
         labels = {"com.docker.compose.project": project, "com.docker.compose.project.working_dir": str(root), "com.docker.compose.service": "stolas"}
         if instance:
             labels["org.stolas.instance"] = instance
@@ -93,7 +93,7 @@ class RuntimeTests(unittest.TestCase):
         self.addCleanup(self.command.stop)
 
     def runtime(self):
-        deploy.stage_sources(ROOT, self.root, "v0.6.5", "fixture")
+        deploy.stage_sources(ROOT, self.root, "v0.6.6", "fixture")
         (self.root / ".env").write_text("STOLAS_API_TOKEN=" + "a" * 40 + "\nSTOLAS_LISTEN=127.0.0.1\nSTOLAS_PORT=8080\n")
         (self.root / "config").mkdir(exist_ok=True)
         (self.root / "config/local.json").write_text(json.dumps(install.DEFAULT))
@@ -156,7 +156,7 @@ class RuntimeTests(unittest.TestCase):
                 raise OSError("injected write failure")
             return original(source, destination)
         with patch.object(deploy, "replace_file", side_effect=fail), self.assertRaises(OSError):
-            deploy.stage_sources(ROOT, self.root, "v0.6.5", "")
+            deploy.stage_sources(ROOT, self.root, "v0.6.6", "")
         for name, content in before.items():
             self.assertEqual((self.root / name).read_bytes(), content, name)
 
@@ -187,10 +187,10 @@ class RuntimeTests(unittest.TestCase):
     def test_shared_image_is_preserved(self):
         self.runtime(); self.activate()
         foreign = self.docker.container(self.root.parent / "foreign", "foreign", "different")
-        foreign["image_id"] = self.docker.images["stolas:0.6.5"]["id"]
+        foreign["image_id"] = self.docker.images["stolas:0.6.6"]["id"]
         with patch("builtins.input", side_effect=["1", "1"]):
             manage.uninstall(self.root)
-        self.assertIn("stolas:0.6.5", self.docker.images)
+        self.assertIn("stolas:0.6.6", self.docker.images)
         self.assertIn(foreign, self.docker.items)
 
     def test_replaced_volume_with_same_name_is_not_owned(self):

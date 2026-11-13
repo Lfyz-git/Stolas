@@ -27,7 +27,7 @@ class EntrypointTests(unittest.TestCase):
         self.root = self.home / "installation with spaces ' quoted"
         self.root.mkdir()
         self.binary = self.home / "bin with spaces"
-        deploy.stage_sources(ROOT, self.root, "v0.6.5", "fixture")
+        deploy.stage_sources(ROOT, self.root, "v0.6.6", "fixture")
         (self.root / ".env").write_text("STOLAS_API_TOKEN=" + "a" * 40 + "\nSTOLAS_LISTEN=127.0.0.1\nSTOLAS_PORT=8080\n")
         (self.root / "config").mkdir(exist_ok=True)
         (self.root / "config/local.json").write_text(json.dumps(install.DEFAULT))
@@ -52,7 +52,7 @@ class EntrypointTests(unittest.TestCase):
         record = self.install(name="stolas-first")
         other = self.home / "second"
         other.mkdir()
-        deploy.stage_sources(ROOT, other, "v0.6.5", "fixture")
+        deploy.stage_sources(ROOT, other, "v0.6.6", "fixture")
         with self.assertRaises(FileExistsError):
             self.install(other, "stolas-first")
         second = self.install(other, "stolas-second")
